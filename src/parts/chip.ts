@@ -127,7 +127,7 @@ export const chip: PartDef<Chip> = {
    * устоится; число переключений на решение ограничено (как у блока питания), иначе кольцо из
    * инверторов без задержки качалось бы вечно.
    */
-  newton(c, sim, _iter, shared) {
+  newton(c, sim, iter, shared) {
     const model = sim.modelOf(c.id);
     if (!model || sim.state(c.id).burned) return true;
     const span = supply(c, model, sim) ?? 0;
@@ -159,12 +159,18 @@ export const chip: PartDef<Chip> = {
     // Качается в петле без задержки — генерирует быстрее, чем видно: выходы «не определены»
     const per = (shared.per ??= new Map());
     const n = (per.get(c.id) ?? 0) + 1;
-    per.set(c.id, n);
     if (n > MAX_FLIPS && q >= 0) {
       const x = model.outputs.reduce((m, _, k) => m | (1 << (k + 16)), 0);
       if (sim.junction.get(key) === x) return true;
       q = x;
     }
+    // Уже качается (две смены за решение) — за итерацию меняется только одна такая модель: иначе
+    // защёлка из двух вентилей переключается обеими половинами разом и ходит 00 ↔ 11 без конца
+    if (n > 2) {
+      if (shared.swingIter === iter) return false;
+      shared.swingIter = iter;
+    }
+    per.set(c.id, n);
     sim.junction.set(key, q);
     shared.flips++;
     return false;
