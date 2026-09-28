@@ -17,6 +17,7 @@ import { bench, blinkPeriod, free, ledOk, lessonById, mA, noHurt, of, settle, ty
 import { referenceChips } from "./build";
 import type { KitItem } from "./levels";
 import { PROJECTS } from "./projects";
+import { SMD_REPAIRS } from "./repairsSmd";
 
 /** Стол ремонта: показаний деталей не видно. */
 const repair = (s: Scene): Scene => ({
@@ -310,6 +311,7 @@ export const REPAIRS: Lesson[] = [
       return [{ text: period ? `Мигает: период ${formatSI(period, "с")}` : "Светодиоды мигают по очереди", ok: period > 0.3 && period < 5 }, noHurt(settle(scene).hurt)];
     },
   },
+  ...SMD_REPAIRS,
 ];
 
 /** Урок введения или ремонта по id. */

@@ -20,6 +20,13 @@ const FIX: Record<string, (s: Scene) => void> = {
   "fix-pcb-crack": (s) => void s.wires.push({ id: "WX", a: { hole: "pD8" }, b: { hole: "pE8" }, color: "#2f9e5a" }),
   "fix-adder": (s) => void s.wires.push({ id: "WX", a: { comp: "SA2", pin: 1 }, b: { comp: "D2", pin: 1 }, color: "#e3b21c" }),
   "fix-blinker": (s) => void delete s.components.find((c) => c.id === "C1")!.fault,
+  "fix-smd-crack": (s) => void s.wires.push({ id: "WX", a: { hole: "s:R2.2" }, b: { hole: "s:HL2.1" }, color: "#2f9e5a" }),
+  // Замена транзистора: тот же корпус, другой тип
+  "fix-smd-fet": (s) => void s.components.forEach((c) => c.type === "mosfet" && (c.kind = "2N7002")),
+  // Мост припоя снимают: дорожки между выводами 7 и 8 больше нет
+  "fix-soic-bridge": (s) => void (s.traces = s.traces!.filter((t) => !(t.a === "s:DA1.7" && t.b === "s:DA1.8"))),
+  "fix-display": (s) => void delete s.components.find((c) => c.id === "HG1")!.fault,
+  "fix-555": (s) => void Object.assign(s.components.find((c) => c.id === "C1")!, { variant: "electrolytic", uF: 10, volts: 16 }),
 };
 
 describe("ремонт", () => {
