@@ -355,7 +355,12 @@ export class Simulation {
     }
     // Решение для показа — с тем же шагом, что и сам шаг: при мелком шаге (0,1 мс у проверки
     // дребезга) пересчёт с 5 мс ослабил бы конденсаторы и сбил состояние моделей
-    if (transient) this.solveAt(Math.min(SUBSTEP, h));
+    if (transient) {
+      // Не сошлось — показываем последнее сошедшееся решение, а не мусор последней итерации
+      // (переходы остаются с последней итерации: следующий шаг от них сходится быстрее)
+      const solution = this.solution;
+      if (!this.solveAt(Math.min(SUBSTEP, h))) this.solution = solution;
+    }
     this.budget = Infinity;
     this.commit();
     return failed;
@@ -368,6 +373,7 @@ export class Simulation {
    */
   private advance(h: number, depth: number): Component[] {
     const saved = new Map(this.junction);
+    const savedSolution = this.solution;
     const ok = this.solveAt(h);
     // Если схема упорно не сходится, не дробим до бесконечности: страница не должна зависнуть
     if (!ok && depth < 15 && this.budget > 0) {
@@ -376,8 +382,9 @@ export class Simulation {
     }
     if (!ok) {
       this.nonConverged++;
-      // Не сошлось совсем — оставляем переходы как до шага, а не последнюю (возможно, негодную) итерацию
+      // Не сошлось совсем — оставляем переходы и решение как до шага, а не последнюю (возможно, негодную) итерацию
       this.junction = saved;
+      this.solution = savedSolution;
     }
     this.time += h;
     for (const c of this.flat) {

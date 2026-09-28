@@ -131,3 +131,51 @@ describe("проект ЦАП", () => {
     expect(bare[0].ok, bare[0].text).toBe(false);
   }, 180000);
 });
+
+describe("проект «Вольтметр»", () => {
+  /** 555 → И (такт, компаратор) → 393 → R-2R → LM393 (вход на IN+, своё на IN−); 393 → 4511 → индикатор. */
+  function adc() {
+    const hole = (h: string): Endpoint => ({ hole: h });
+    const r = (id: string, ohms: number): Component => ({ id, type: "resistor", variant: "tht", ohms, smdSize: "0805", placement: f });
+    const comps: Component[] = [chip("D1", "ref:ne555"), chip("D2", "ref:cnt393"), chip("D3", "ref:and"), chip("DA1", "ref:lmv331"), chip("D4", "ref:hc4511"), { id: "HG1", type: "display", placement: f },
+      r("RA", 10_000), r("RB", 33_000), { id: "C1", type: "capacitor", variant: "ceramic", uF: 1, volts: 50, placement: f }, r("RP", 10_000)];
+    const wires: [Endpoint, Endpoint][] = [
+      // 555 генератором
+      [plus, P("D1", 8)], [minus, P("D1", 1)], [plus, P("D1", 4)],
+      [plus, { comp: "RA", pin: 0 }], [{ comp: "RA", pin: 1 }, P("D1", 7)], [P("D1", 7), { comp: "RB", pin: 0 }], [{ comp: "RB", pin: 1 }, P("D1", 6)], [P("D1", 6), P("D1", 2)],
+      [P("D1", 6), { comp: "C1", pin: 0 }], [{ comp: "C1", pin: 1 }, minus],
+      // И: такт и «своё ниже входа» → счёт
+      [plus, P("D3", 5)], [minus, P("D3", 3)], [P("D1", 3), P("D3", 1)], [P("DA1", 4), P("D3", 2)], [P("DA1", 4), { comp: "RP", pin: 0 }], [{ comp: "RP", pin: 1 }, plus],
+      [plus, P("D2", 14)], [minus, P("D2", 7)], [P("D3", 4), P("D2", 1)], [hole("j4"), P("D2", 2)], [plus, P("D2", 12)], [minus, P("D2", 13)],
+      // Компаратор LMV331: вход на IN+ (1), лестница на IN− (3)
+      [plus, P("DA1", 5)], [minus, P("DA1", 2)], [hole("j2"), P("DA1", 1)],
+      // 4511 и индикатор
+      [plus, P("D4", 16)], [minus, P("D4", 8)], [P("D2", 3), P("D4", 7)], [P("D2", 4), P("D4", 1)], [P("D2", 5), P("D4", 2)], [P("D2", 6), P("D4", 6)],
+      [plus, P("D4", 3)], [plus, P("D4", 4)], [minus, P("D4", 5)], [minus, P("HG1", 3)],
+    ];
+    const q = [3, 4, 5, 6];
+    const node = (k: number): Endpoint => ({ comp: `RB${k}`, pin: 1 });
+    q.forEach((p, k) => {
+      comps.push(r(`RB${k}`, 20_000));
+      wires.push([P("D2", p), { comp: `RB${k}`, pin: 0 }]);
+      if (k > 0) {
+        comps.push(r(`RR${k}`, 10_000));
+        wires.push([node(k - 1), { comp: `RR${k}`, pin: 0 }], [{ comp: `RR${k}`, pin: 1 }, node(k)]);
+      }
+    });
+    comps.push(r("RT", 20_000));
+    wires.push([node(0), { comp: "RT", pin: 0 }], [{ comp: "RT", pin: 1 }, minus], [node(3), P("DA1", 3)]);
+    const seg: [number, number][] = [[13, 7], [12, 6], [11, 4], [10, 2], [9, 1], [15, 9], [14, 10]];
+    seg.forEach(([cp, dp], k) => {
+      comps.push(r(`R${k + 1}`, 330));
+      wires.push([P("D4", cp), { comp: `R${k + 1}`, pin: 0 }], [{ comp: `R${k + 1}`, pin: 1 }, P("HG1", dp)]);
+    });
+    return solved("proj-adc", comps, wires);
+  }
+
+  it("эталон показывает 4, 9, 2", () => {
+    const t0 = performance.now();
+    const steps = PROJECTS.find((p) => p.id === "proj-adc")!.check(adc());
+    expect(steps.every((s) => s.ok), `${Math.round(performance.now() - t0)} мс\n` + steps.map((s) => `${s.ok ? "✓" : "✗"} ${s.text}`).join("\n")).toBe(true);
+  }, 180000);
+});

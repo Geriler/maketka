@@ -135,6 +135,53 @@ export function dacRun(scene: Scene) {
   return { rows, hurt: r.hurt };
 }
 
+// ─── АЦП последовательного счёта: вход — источник G2, сброс — кнопка ─────────
+
+/** Куда выведены вход АЦП и кнопка сброса (нижняя половина BB1, ряд j). */
+export const ADC_PINS = { vin: "j2", reset: "j4" };
+
+/** Стол вольтметра: регулируемый источник G2 (измеряемое напряжение) и кнопка сброса SB1 без дребезга с подтяжкой. */
+function adcBench(id: string): Scene {
+  const s = projectBench(id);
+  const plus = { comp: "G1", pin: 1 }, minus = { comp: "G1", pin: 0 };
+  s.components.push(
+    { id: "G2", type: "psu", volts: 1, amps: 0.1, on: true, placement: free(-26, 18), stock: true } as Component,
+    { id: "SB1", type: "button", placement: free(0, 22), stock: true } as Component,
+    { id: "RS1", type: "resistor", variant: "tht", ohms: 10_000, smdSize: "0805", placement: free(0, 30), stock: true },
+  );
+  s.wires.push(
+    { id: "WV1", a: { comp: "G2", pin: 1 }, b: { hole: ADC_PINS.vin }, color: "#e3b21c" },
+    { id: "WV2", a: { comp: "G2", pin: 0 }, b: minus, color: "#1b1d20" },
+    { id: "WR1", a: plus, b: { comp: "SB1", pin: 0 }, color: "#c8261f" },
+    { id: "WR2", a: { comp: "SB1", pin: 1 }, b: { hole: ADC_PINS.reset }, color: "#2f9e5a" },
+    { id: "WR3", a: { comp: "SB1", pin: 1 }, b: { comp: "RS1", pin: 0 }, color: "#2f9e5a" },
+    { id: "WR4", a: { comp: "RS1", pin: 1 }, b: minus, color: "#1b1d20" },
+  );
+  return s;
+}
+
+/** Ступенька АЦП, В: 4 бита от 5 В. */
+export const ADC_LSB = 5 / 16;
+/** Входные напряжения проверки (не у границ ступенек); после большого — меньшее: без сброса не сработает. */
+export const ADC_POINTS = [1.0, 2.7, 0.5];
+
+/** Прогнать вольтметр: на каждое напряжение — сброс кнопкой, 0,7 с счёта, цифра на индикаторе. */
+export function adcRun(scene: Scene) {
+  const r = runner(scene);
+  const g2 = r.sim.scene.components.find((c) => c.id === "G2") as Extract<Component, { type: "psu" }> | undefined;
+  r.run(0.3);
+  const rows = ADC_POINTS.map((vin) => {
+    if (g2) g2.volts = vin;
+    r.run(0.05);
+    r.sim.held.add("SB1");
+    r.run(0.05);
+    r.sim.held.delete("SB1");
+    r.run(0.7);
+    return { vin, digit: r.disp ? shownDigit(r.disp, r.sim) : -1 };
+  });
+  return { rows, peak: r.peak(), hurt: r.hurt };
+}
+
 const chip = (func: LogicFunc, count = 1): KitItem => ({ part: "chip", func, count });
 const DISPLAY_KIT: KitItem = { part: "other", type: "display", tool: "display", preset: {}, label: "индикатор SC56-11SRWA", count: 1 };
 const SEG_RESISTORS: KitItem = { part: "resistor", ohms: 330, count: 7 };
@@ -264,6 +311,42 @@ export const PROJECTS: Lesson[] = [
         { text: `Выход = код/256 · 5 В ± 20 мВ: ${rows.map((x) => `${x.code} → ${v(x.v)}`).join(", ")}${bad ? ` (у ${bad.code} нужно ${v(want(bad.code))})` : ""}`, ok: !bad },
         { text: `Пока вдвигается код, выход не меняется (не больше чем на 20 мВ) — сейчас до ${formatSI(drift, "В")}`, ok: drift <= 0.02 },
         noHurt([...hurt]),
+      ];
+    },
+  },
+  {
+    id: "proj-adc",
+    project: true,
+    title: "Вольтметр",
+    about:
+      "Индикатор показывает, сколько ступенек по 5/16 В (0,3125 В) нужно, чтобы дойти до входного напряжения, с округлением вверх: 1 В — 4 ступеньки (1,25 В). Вход — источник G2 на столбце 2 (ряды f–j), его напряжение можно крутить; кнопка SB1 на столбце 4 (нажата — 5 В) начинает измерение заново. Питание 5 В — на верхних шинах. Проверка ставит на G2 1; 2,7 и 0,5 В, каждый раз нажимает SB1, ждёт 0,7 с и читает цифру: должно быть 4, 9 и 2.",
+    hints: [
+      "Нужен источник напряжения, которое растёт ступеньками вместе со счётом, и то, что сравнит его с входом. Что из открытого считает, а что сравнивает два напряжения?",
+      "Счёт должен идти, только пока своё напряжение ниже входного. Как разрешать и запрещать такты одним сигналом? И почему счёт не должен уходить за 9 при входе до 2,8 В?",
+    ],
+    kit: [
+      chip("timer"),
+      chip("cnt393"),
+      chip("and"),
+      chip("cmp"),
+      chip("bcd7"),
+      DISPLAY_KIT,
+      SEG_RESISTORS,
+      { part: "resistor", ohms: 10_000, count: 5 },
+      { part: "resistor", ohms: 20_000, count: 5 },
+      { part: "resistor", ohms: 33_000, count: 1 },
+      { part: "other", type: "capacitor", tool: "cap", preset: { variant: "ceramic", ceramicUF: 1, ceramicV: 50 }, match: { variant: "ceramic", uF: 1 }, label: "конденсатор 1 мкФ (керамический)", count: 1 },
+    ],
+    start: () => adcBench("proj-adc"),
+    check(scene) {
+      if (!of(scene, "display").length) return [{ text: "На столе индикатор", ok: false }];
+      const { rows, peak, hurt } = adcRun(scene);
+      const want = (v: number) => Math.ceil(v / ADC_LSB);
+      const bad = rows.find((x) => x.digit !== want(x.vin));
+      const show = (d: number) => (d < 0 ? "?" : String(d));
+      return [
+        { text: `Показывает число ступенек: ${rows.map((x) => `${String(x.vin).replace(".", ",")} В → ${show(x.digit)}`).join(", ")}${bad ? ` (при ${String(bad.vin).replace(".", ",")} В нужно ${want(bad.vin)})` : ""}`, ok: !bad },
+        ...displaySteps(peak, hurt),
       ];
     },
   },

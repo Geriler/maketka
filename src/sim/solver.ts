@@ -324,10 +324,16 @@ function gaussianSolve(A: Float64Array[], b: Float64Array): Float64Array {
       [A[pivot], A[col]] = [A[col], A[pivot]];
       [b[pivot], b[col]] = [b[col], b[pivot]];
     }
+    // Матрица цепи почти вся из нулей: вычитаем только по ненулевым столбцам ведущей строки
+    // (вычитание f·0 ничего не меняло — результат тот же, но в разы быстрее)
+    const pr = A[col];
+    const nz: number[] = [];
+    for (let k = col; k < n; k++) if (pr[k] !== 0) nz.push(k);
     for (let row = col + 1; row < n; row++) {
-      const f = A[row][col] / A[col][col];
+      const ar = A[row];
+      const f = ar[col] / pr[col];
       if (f === 0) continue;
-      for (let k = col; k < n; k++) A[row][k] -= f * A[col][k];
+      for (const k of nz) ar[k] -= f * pr[k];
       b[row] -= f * b[col];
     }
   }

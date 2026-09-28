@@ -149,6 +149,7 @@ const PLACE: Record<string, [number, number]> = {
   lm321: [7, 0],
   lm358: [8, 0],
   "proj-dac": [10, 1],
+  "proj-adc": [10, 4.5],
   "proj-stopwatch": [10, 2.5],
   "proj-counter": [10, 6.5],
 };
