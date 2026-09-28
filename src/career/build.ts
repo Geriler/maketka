@@ -644,6 +644,103 @@ function compareSteps(def: ChipDef, level: Level, chips: Record<string, ChipDef>
   return out;
 }
 
+/**
+ * Операционный усилитель по даташиту LM321/LM358 при 5 В. Схемы включения: повторитель (выход на
+ * IN−), неинвертирующий ×2 (10 кОм с выхода на IN−, 10 кОм с IN− на общий), без обратной связи
+ * (оба входа от источников). vin — напряжение на IN+, vminus — на IN− (только без обратной связи),
+ * load — нагрузка с выхода на общий, Ом.
+ */
+type OpampCase = { mode: "follow" | "gain2" | "open"; vin: number; vminus?: number; load?: number };
+
+export function opampRun(def: ChipDef, level: Level, chips: Record<string, ChipDef>, c: OpampCase) {
+  const io = gateIo(level);
+  const free = { mode: "free" as const, x: 0, z: 0, rot: 0 };
+  const u: Chip = { id: "U1", type: "chip", def: def.id, name: def.name, package: def.package, pins: def.pins, placement: free };
+  const pin = (p: number): Endpoint => ({ comp: "U1", pin: p - 1 });
+  const plus: Endpoint = { comp: "G1", pin: 1 };
+  const minus: Endpoint = { comp: "G1", pin: 0 };
+  const res = (id: string, ohms: number): Component => ({ id, type: "resistor", variant: "tht", ohms, smdSize: "0805", placement: free });
+  const src = (id: string, volts: number): Component => ({ id, type: "psu", volts, amps: 1, on: true, placement: free });
+  const components: Component[] = [src("G1", CHECK_VOLTS), u];
+  const links: [Endpoint, Endpoint][] = [[plus, pin(io.vcc)], [minus, pin(io.gnd)]];
+  const ch = level.channels ?? [];
+  ch.forEach((k, i) => {
+    components.push(src(`GP${i}`, c.vin));
+    links.push([{ comp: `GP${i}`, pin: 1 }, pin(k.plus)], [{ comp: `GP${i}`, pin: 0 }, minus]);
+    if (c.mode === "follow") links.push([pin(k.out), pin(k.minus)]);
+    if (c.mode === "gain2") {
+      components.push(res(`RF${i}`, 10_000), res(`RG${i}`, 10_000));
+      links.push([pin(k.out), { comp: `RF${i}`, pin: 0 }], [{ comp: `RF${i}`, pin: 1 }, pin(k.minus)], [pin(k.minus), { comp: `RG${i}`, pin: 0 }], [{ comp: `RG${i}`, pin: 1 }, minus]);
+    }
+    if (c.mode === "open") {
+      components.push(src(`GM${i}`, c.vminus ?? 0));
+      links.push([{ comp: `GM${i}`, pin: 1 }, pin(k.minus)], [{ comp: `GM${i}`, pin: 0 }, minus]);
+    }
+    if (c.load) {
+      components.push(res(`RL${i}`, c.load));
+      links.push([pin(k.out), { comp: `RL${i}`, pin: 0 }], [{ comp: `RL${i}`, pin: 1 }, minus]);
+    }
+  });
+  const scene: Scene = { components, wires: links.map(([a, b], i) => ({ id: `W${i}`, a, b, color: "" })), boards: [], chips: { ...chips, [def.id]: def } };
+  const sim = new Simulation(scene, undefined, { expand: ["U1"], strictModels: true });
+  sim.solve();
+  const burnt = new Set<string>();
+  for (const b of sim.step(0.01)) if (b.id.startsWith("U1/")) burnt.add(b.id.slice(3));
+  for (const p of sim.parts) {
+    const limit = heatThreshold(p);
+    if (p.id.startsWith("U1/") && limit && sim.overload(p) > limit) burnt.add(p.id.slice(3));
+  }
+  const gnd = sim.solution.voltage.get(pinNode(u, io.gnd - 1)) ?? 0;
+  const find = (id: string) => scene.components.find((x) => x.id === id)!;
+  const outs = ch.map((k, i) => ({
+    v: (sim.solution.voltage.get(pinNode(u, k.out - 1)) ?? 0) - gnd,
+    inAmps: Math.max(Math.abs(sim.current(find(`GP${i}`))), c.mode === "open" ? Math.abs(sim.current(find(`GM${i}`))) : 0),
+  }));
+  return { outs, supply: Math.abs(sim.current(find("G1"))), burnt: [...burnt] };
+}
+
+/** Точки повторителя и усилителя ×2, В на IN+. */
+export const FOLLOW_POINTS = [0.1, 1, 2, 3];
+export const GAIN2_POINTS = [0.25, 0.75, 1.5];
+
+/** Проверка операционного усилителя: по каналам — повторитель, ×2, нагрузка, без обратной связи, входной ток; ток потребления. */
+function opampSteps(def: ChipDef, level: Level, chips: Record<string, ChipDef>): { text: string; ok: boolean }[] {
+  const n = level.channels?.length ?? 1;
+  const run = (c: OpampCase) => opampRun(def, level, chips, c);
+  const burnt = new Set<string>();
+  const inAmps = Array.from({ length: n }, () => 0);
+  const note = (r: ReturnType<typeof run>) => {
+    r.burnt.forEach((b) => burnt.add(b));
+    r.outs.forEach((o, k) => (inAmps[k] = Math.max(inAmps[k], o.inAmps)));
+    return r;
+  };
+  const follow = FOLLOW_POINTS.map((vin) => ({ vin, r: note(run({ mode: "follow", vin, load: 10_000 })) }));
+  const gain = GAIN2_POINTS.map((vin) => ({ vin, r: note(run({ mode: "gain2", vin })) }));
+  const loaded = note(run({ mode: "follow", vin: 2, load: 2_000 }));
+  const high = note(run({ mode: "open", vin: 1.1, vminus: 1, load: 10_000 }));
+  const low = note(run({ mode: "open", vin: 0.9, vminus: 1, load: 10_000 }));
+  const idle = note(run({ mode: "follow", vin: 1 }));
+  const mv = (x: number) => `${Math.round(x * 1000)} мВ`;
+  const v = (x: number) => formatSI(x, "В");
+  const out: { text: string; ok: boolean }[] = [];
+  for (let k = 0; k < n; k++) {
+    const name = n > 1 ? `Канал ${k + 1}: ` : "";
+    const fBad = follow.find((f) => Math.abs(f.r.outs[k].v - f.vin) > 0.01);
+    out.push({ text: `${name}Повторитель (выход на IN−): выход = IN+ с точностью 10 мВ при 0,1–3 В${fBad ? ` — при ${v(fBad.vin)} на выходе ${v(fBad.r.outs[k].v)}` : ""}`, ok: !fBad });
+    const gBad = gain.find((g) => Math.abs(g.r.outs[k].v - 2 * g.vin) > 0.01 + 0.01 * 2 * g.vin);
+    out.push({ text: `${name}Усилитель ×2 (10 кОм с выхода на IN−, 10 кОм с IN− на общий): выход = 2·IN+ с точностью 1 % + 10 мВ${gBad ? ` — при ${v(gBad.vin)} на выходе ${v(gBad.r.outs[k].v)}` : ""}`, ok: !gBad });
+    const lv = loaded.outs[k].v;
+    out.push({ text: `${name}Повторитель под нагрузкой 2 кОм: при 2 В на входе ошибка не больше 10 мВ — сейчас ${mv(Math.abs(lv - 2))}`, ok: Math.abs(lv - 2) <= 0.01 });
+    const hi = high.outs[k].v, lo = low.outs[k].v;
+    out.push({ text: `${name}Без обратной связи (разница 100 мВ, нагрузка 10 кОм): выход не ниже 3,5 В и не выше 20 мВ — сейчас ${v(hi)} и ${v(lo)}`, ok: hi >= 3.5 && lo <= 0.02 });
+    out.push({ text: `${name}Входной ток не больше 250 нА — сейчас ${formatSI(inAmps[k], "А")}`, ok: inAmps[k] <= 250e-9 });
+  }
+  const perAmp = idle.supply / n;
+  out.push({ text: `Ток потребления без нагрузки не больше 1,15 мА на усилитель — сейчас ${formatSI(perAmp, "А")}`, ok: perAmp <= 1.15e-3 });
+  out.push({ text: burnt.size ? `Ничего не сгорело — а сейчас: ${[...burnt].join(", ")}` : "Ничего не сгорело", ok: !burnt.size });
+  return out;
+}
+
 /** Генератор на 555 по даташиту: RA, RB, C и ожидаемые период и доля единицы. */
 export const ASTABLE = { ra: 10_000, rb: 47_000, uF: 1, period: 0.693 * (10_000 + 2 * 47_000) * 1e-6, duty: (10_000 + 47_000) / (10_000 + 2 * 47_000) };
 
@@ -721,9 +818,10 @@ export function checkLevel(level: Level, scene: Scene, chips: Record<string, Chi
   if (problems.length) return { ok: false, problems, rows: [] };
   const def = packageChip(scene, level.part, id);
   def.scene.chips = { ...chipsUsed(scene), ...(scene.chips ?? {}) };
-  if (level.check === "osc" || level.check === "bounce" || level.check === "compare") {
+  if (level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "opamp") {
     const all = { ...chips, ...def.scene.chips };
-    const steps = level.check === "osc" ? oscSteps(def, level, all) : level.check === "bounce" ? bounceSteps(def, level, all) : compareSteps(def, level, all);
+    const steps =
+      level.check === "osc" ? oscSteps(def, level, all) : level.check === "bounce" ? bounceSteps(def, level, all) : level.check === "opamp" ? opampSteps(def, level, all) : compareSteps(def, level, all);
     const ok = steps.every((x) => x.ok);
     return ok
       ? { ok, problems: [], rows: [], steps, def, metrics: measure(scene, [], def, all) }
@@ -872,7 +970,7 @@ export function characterize(def: ChipDef, scene: Scene): ChipModel | undefined 
   // Генератор моделью не описать: у него нет таблицы — считается целиком
   // Генератор и подавитель дребезга живут временем (RC) — модель без времени их не заменит
   // Компараторы и таймер сравнивают напряжения, а не логические уровни: только по транзисторам
-  if (!level || def.pins !== level.roles.length || level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "timer") return undefined;
+  if (!level || def.pins !== level.roles.length || level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "timer" || level.check === "opamp") return undefined;
   const key = `${def.id}@${def.updatedAt}`;
   const known = models.get(key);
   if (known !== undefined) return known ?? undefined;
