@@ -53,6 +53,8 @@ export interface Solution {
   /** Потенциал каждого исходного узла относительно опорного узла его части цепи, В. */
   voltage: ReadonlyMap<string, number>;
   branches: ReadonlyMap<string, BranchResult>;
+  /** Все потенциалы — числа (не NaN и не бесконечность). */
+  finite?: boolean;
 }
 
 class UnionFind {
@@ -99,6 +101,50 @@ export interface Topology {
   /** Обозначение ветви → её номер. */
   pos: Map<string, number>;
   size: number;
+  /** Порядок исключения для разреженного решения (считается по структуре, см. symbolic). */
+  sym?: Symbolic;
+  /** Матрица и правая часть: переиспользуются между итерациями, чтобы не выделять память каждый раз. */
+  G?: Float64Array[];
+  I?: Float64Array;
+}
+
+/**
+ * Разреженное исключение: порядок строк (минимальная степень, как в SPICE) и соседи каждой строки
+ * к моменту её исключения — с учётом заполнения. Числа на итерациях меняются, структура — нет.
+ */
+interface Symbolic {
+  /** Структура управляемых источников, по которой посчитан порядок. */
+  key: number;
+  order: Int32Array;
+  /** Соседи строки p, исключаемые позже неё (включая заполнение). */
+  later: Int32Array[];
+}
+
+/** Порядок минимальной степени по симметричной структуре матрицы. */
+function symbolic(size: number, pairs: [number, number][], key: number): Symbolic {
+  const adj = Array.from({ length: size }, () => new Set<number>());
+  for (const [i, j] of pairs) {
+    if (i < 0 || j < 0 || i === j) continue;
+    adj[i].add(j);
+    adj[j].add(i);
+  }
+  const done = new Uint8Array(size);
+  const order = new Int32Array(size);
+  const later: Int32Array[] = new Array(size);
+  for (let k = 0; k < size; k++) {
+    let best = -1;
+    for (let i = 0; i < size; i++) if (!done[i] && (best < 0 || adj[i].size < adj[best].size)) best = i;
+    const nb = [...adj[best]];
+    order[k] = best;
+    later[best] = Int32Array.from(nb);
+    done[best] = 1;
+    // Исключение строки связывает всех её соседей между собой (заполнение)
+    for (const a of nb) {
+      adj[a].delete(best);
+      for (const b of nb) if (a !== b) adj[a].add(b);
+    }
+  }
+  return { key, order, later };
 }
 
 function sameTopology(t: Topology, branches: Branch[], links: [string, string][]): boolean {
@@ -241,8 +287,19 @@ export function solveCircuit(branches: Branch[], links: [string, string][] = [],
   }
 
   const size = t.size;
-  const G = Array.from({ length: size }, () => new Float64Array(size));
-  const I = new Float64Array(size);
+  if (!t.G) {
+    t.G = Array.from({ length: size }, () => new Float64Array(size));
+    t.I = new Float64Array(size);
+  }
+  const G = t.G;
+  const I = t.I!;
+  const tt = t;
+  const idx = (n: string) => tt.row.get(n) ?? -1;
+  // Узлы управляемых источников — один раз: они нужны и для сборки, и для структуры
+  const vccsAt = (extras.vccs ?? []).map((v) => [idx(v.a), idx(v.b), idx(v.cp), idx(v.cn), v.g]);
+  const assemble = () => {
+  for (const r of G) r.fill(0);
+  I.fill(0);
   for (let i = 0; i < branches.length; i++) {
     const br = branches[i];
     if (!t.active[i]) continue;
@@ -267,27 +324,44 @@ export function solveCircuit(branches: Branch[], links: [string, string][] = [],
   // Узлы, которые связаны только через управляемые источники, решателю не видны как связные.
   // Для транзистора это не случается: переходы база–эмиттер и база–коллектор — обычные ветви.
   // Узел, которого нет среди ветвей и связей, — ни в одной строке.
-  const idx = (n: string) => t.row.get(n) ?? -1;
   for (const src of extras.currents ?? []) {
     const a = idx(src.a);
     const b = idx(src.b);
     if (a >= 0) I[a] -= src.j;
     if (b >= 0) I[b] += src.j;
   }
-  for (const s of extras.vccs ?? []) {
-    const a = idx(s.a);
-    const b = idx(s.b);
-    const cp = idx(s.cp);
-    const cn = idx(s.cn);
+  for (const [a, b, cp, cn, g] of vccsAt) {
     // Уходящий из a ток g·(Vcp − Vcn) — в левую часть уравнения узла a, с обратным знаком для b
-    for (const [row, sign] of [[a, 1], [b, -1]] as const) {
-      if (row < 0) continue;
-      if (cp >= 0) G[row][cp] += sign * s.g;
-      if (cn >= 0) G[row][cn] -= sign * s.g;
+    if (a >= 0) {
+      if (cp >= 0) G[a][cp] += g;
+      if (cn >= 0) G[a][cn] -= g;
+    }
+    if (b >= 0) {
+      if (cp >= 0) G[b][cp] -= g;
+      if (cn >= 0) G[b][cn] += g;
     }
   }
+  };
+  assemble();
 
-  const x = gaussianSolve(G, I);
+  // Разреженное решение по порядку минимальной степени; не вышло (почти нулевой ведущий) — плотное
+  // Структура управляемых источников — числом (одна и та же на итерациях, меняется редко)
+  let key = vccsAt.length;
+  for (const v of vccsAt) for (let q = 0; q < 4; q++) key = (Math.imul(key, 31) + v[q] + 1) | 0;
+  if (!t.sym || t.sym.key !== key) {
+    const pairs: [number, number][] = [];
+    for (let i = 0; i < branches.length; i++) if (t.active[i]) pairs.push([t.ai[i], t.bi[i]]);
+    for (const [a, b, cp, cn] of vccsAt) for (const r of [a, b]) for (const c of [cp, cn]) pairs.push([r, c]);
+    t.sym = symbolic(size, pairs, key);
+  }
+  // Исключение идёт прямо в G; не вышло — собираем заново и решаем плотным методом
+  let x = sparseSolve(G, I, t.sym);
+  if (!x) {
+    assemble();
+    x = gaussianSolve(G, I);
+  }
+  let finite = true;
+  for (let r = 0; r < size; r++) if (!Number.isFinite(x[r])) finite = false;
   const topo = t;
   const at = (r: number) => (r < 0 ? 0 : x[r]);
   const potential = (n: string) => at(topo.row.get(n)!);
@@ -305,10 +379,46 @@ export function solveCircuit(branches: Branch[], links: [string, string][] = [],
   };
   const results = new LazyMap<BranchResult>(() => topo.pos.keys(), (k) => topo.pos.has(k), branchResult);
 
-  return { nodeOf, voltage, branches: results };
+  return { nodeOf, voltage, branches: results, finite };
 }
 
 /** Метод Гаусса с выбором главного элемента по столбцу. Матрица портится. */
+/**
+ * Исключение в порядке sym без перестановок строк: у матрицы проводимостей диагональ преобладает
+ * (управляемые источники транзисторов её не ломают на практике). Если ведущий элемент почти ноль
+ * или ответ не число — undefined, и решает плотный метод с выбором ведущего. A и b портятся.
+ */
+function sparseSolve(A: Float64Array[], b: Float64Array, sym: Symbolic): Float64Array | undefined {
+  const n = b.length;
+  for (let k = 0; k < n; k++) {
+    const p = sym.order[k];
+    const ap = A[p];
+    const piv = ap[p];
+    const nb = sym.later[p];
+    let big = Math.abs(piv);
+    for (const j of nb) big = Math.max(big, Math.abs(ap[j]));
+    if (!(Math.abs(piv) > 1e-9 * big) || big === 0) return undefined;
+    for (const i of nb) {
+      const ai = A[i];
+      const f = ai[p] / piv;
+      if (f === 0) continue;
+      ai[p] = 0;
+      for (const j of nb) ai[j] -= f * ap[j];
+      b[i] -= f * b[p];
+    }
+  }
+  const x = new Float64Array(n);
+  for (let k = n - 1; k >= 0; k--) {
+    const p = sym.order[k];
+    const ap = A[p];
+    let s = b[p];
+    for (const j of sym.later[p]) s -= ap[j] * x[j];
+    x[p] = s / ap[p];
+    if (!Number.isFinite(x[p])) return undefined;
+  }
+  return x;
+}
+
 function gaussianSolve(A: Float64Array[], b: Float64Array): Float64Array {
   const n = b.length;
   for (let col = 0; col < n; col++) {

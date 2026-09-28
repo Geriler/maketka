@@ -10,7 +10,7 @@ import { PARTS, part } from "../parts";
 import { mosfetState, type MosfetState } from "../parts/mosfet";
 import { transistorState, type TransistorState } from "../parts/transistor";
 import { endpointNode, pinNode } from "./nodes";
-import { solveCircuit, type BranchResult, type Solution, type Topology } from "./solver";
+import { solveCircuit, type Branch, type BranchResult, type Solution, type Topology } from "./solver";
 import { chipModel, type ChipModel } from "../chips/model";
 import * as tolerance from "./tolerance";
 import { NO_TOLERANCE, type Tolerance } from "./tolerance";
@@ -168,6 +168,8 @@ export class Simulation {
   private flat: Component[] = [];
 
   private expand(): Component[] {
+    // Сцена могла поменяться (провода, дорожки) — их ветви пересчитаем при следующей сборке
+    this.wireBranches = undefined;
     const out: Component[] = [];
     this.models.clear();
     const add = (list: Component[], prefix: string, depth: number) => {
@@ -211,13 +213,23 @@ export class Simulation {
       part(c).stamp(c, this, s);
       if (c.fault && "short" in c.fault) s.out.push({ id: `${c.id}:fault`, a: pinNode(c, c.fault.short[0]), b: pinNode(c, c.fault.short[1]), r: FAULT_SHORT });
     }
+    // Провода и дорожки между итерациями не меняются — считаются один раз за шаг (см. expand)
+    this.wireBranches ??= this.fixedBranches();
+    for (const b of this.wireBranches) s.out.push(b);
+    return s;
+  }
+
+  /** Ветви проводов и дорожек: от итераций не зависят. */
+  private wireBranches?: Branch[];
+  private fixedBranches(): Branch[] {
+    const out: Branch[] = [];
     for (const w of this.scene.wires) {
-      s.out.push({ id: w.id, a: endpointNode(this.scene, w.a), b: endpointNode(this.scene, w.b), r: w.fault?.open ? Infinity : wireResistance(this.scene, w) });
+      out.push({ id: w.id, a: endpointNode(this.scene, w.a), b: endpointNode(this.scene, w.b), r: w.fault?.open ? Infinity : wireResistance(this.scene, w) });
     }
     for (const t of this.scene.traces ?? []) {
-      s.out.push({ id: t.id, a: HOLE_BY_ID.get(t.a)!.node, b: HOLE_BY_ID.get(t.b)!.node, r: t.fault?.open ? Infinity : traceResistance(t.a, t.b) });
+      out.push({ id: t.id, a: HOLE_BY_ID.get(t.a)!.node, b: HOLE_BY_ID.get(t.b)!.node, r: t.fault?.open ? Infinity : traceResistance(t.a, t.b) });
     }
-    return s;
+    return out;
   }
 
   /** Токи и напряжения MOSFET из текущего решения. */
@@ -262,7 +274,7 @@ export class Simulation {
       } catch {
         return false;
       }
-      if (![...solution.voltage.values()].every(Number.isFinite)) return false;
+      if (solution.finite === false) return false;
       this.solution = solution;
       this.lastIterations = iter;
       if (--this.budget < 0) return false;
