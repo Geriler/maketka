@@ -94,3 +94,40 @@ describe("проекты", () => {
     expect(steps.every((s) => s.ok)).toBe(true);
   }, 180000);
 });
+
+describe("проект ЦАП", () => {
+  /** 74HC595 → R-2R (10/20 кОм) → LM358 повторителем (или без буфера — прямо на выход). */
+  function dac(buffered: boolean) {
+    const comps: Component[] = [chip("D1", "ref:hc595"), chip("DA1", "ref:lm358")];
+    const hole = (h: string): Endpoint => ({ hole: h });
+    const wires: [Endpoint, Endpoint][] = [
+      [plus, P("D1", 16)], [minus, P("D1", 8)], [plus, P("D1", 10)], [minus, P("D1", 13)],
+      [hole("j2"), P("D1", 14)], [hole("j4"), P("D1", 11)], [hole("j6"), P("D1", 12)],
+      [plus, P("DA1", 8)], [minus, P("DA1", 4)],
+    ];
+    // Выходы QA…QH: 15, 1…7
+    const q = [15, 1, 2, 3, 4, 5, 6, 7];
+    const r = (id: string, ohms: number): Component => ({ id, type: "resistor", variant: "tht", ohms, smdSize: "0805", placement: f });
+    const node = (k: number): Endpoint => ({ comp: `RB${k}`, pin: 1 });
+    q.forEach((p, k) => {
+      comps.push(r(`RB${k}`, 20_000));
+      wires.push([P("D1", p), { comp: `RB${k}`, pin: 0 }]);
+      if (k > 0) {
+        comps.push(r(`RR${k}`, 10_000));
+        wires.push([node(k - 1), { comp: `RR${k}`, pin: 0 }], [{ comp: `RR${k}`, pin: 1 }, node(k)]);
+      }
+    });
+    comps.push(r("RT", 20_000));
+    wires.push([node(0), { comp: "RT", pin: 0 }], [{ comp: "RT", pin: 1 }, minus]);
+    if (buffered) wires.push([node(7), P("DA1", 3)], [P("DA1", 1), P("DA1", 2)], [P("DA1", 1), hole("a30")]);
+    else wires.push([node(7), hole("a30")]);
+    return solved("proj-dac", comps, wires);
+  }
+
+  it("с буфером на LM358 проходит, голая лестница под нагрузкой — нет", () => {
+    const steps = PROJECTS.find((p) => p.id === "proj-dac")!.check(dac(true));
+    expect(steps.every((s) => s.ok), steps.map((s) => `${s.ok ? "✓" : "✗"} ${s.text}`).join("\n")).toBe(true);
+    const bare = PROJECTS.find((p) => p.id === "proj-dac")!.check(dac(false));
+    expect(bare[0].ok, bare[0].text).toBe(false);
+  }, 180000);
+});

@@ -1,7 +1,7 @@
 import * as THREE from "three";
 import { boardFrame, type ComponentView, disposeGroup, freeTransform, holePos, lead, mm, tagPickable } from "../view/kit";
 import { MOSFETS, TRANSISTORS, type Mosfet, type Pin, type Transistor, type TransistorKind } from "../model/types";
-import { VT, diodeBranch, limitJunction } from "../sim/devices";
+import { VT, damp, diodeBranch, junctionSettled, limitJunction } from "../sim/devices";
 import { pinNode } from "../sim/nodes";
 import type { Simulation } from "../sim/simulation";
 import * as tolerance from "../sim/tolerance";
@@ -142,7 +142,7 @@ export const transistor: PartDef<Transistor> = {
   stamp(c, sim, s) {
     if (!sim.state(c.id).burned) stampTransistor(c, sim, s);
   },
-  newton(c, sim) {
+  newton(c, sim, iter) {
     const m = bjt(c, sim.tolerance);
     const volt = (pin: Pin) => sim.solution.voltage.get(pinNode(c, pin)) ?? 0;
     const targets: [string, number][] = [
@@ -152,8 +152,9 @@ export const transistor: PartDef<Transistor> = {
     let converged = true;
     for (const [key, vterm] of targets) {
       const vold = sim.junction.get(key) ?? 0;
-      const vnew = limitJunction(vterm, vold, m.junction);
-      if (Math.abs(vnew - vold) > 1e-7) converged = false;
+      // Как у диода: ограничение шага, затухание качелей и сходимость по току перехода
+      const vnew = damp(limitJunction(vterm, vold, m.junction), vold, iter);
+      if (!junctionSettled(m.junction, vold, vnew, vterm)) converged = false;
       sim.junction.set(key, vnew);
     }
     return converged;

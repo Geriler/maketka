@@ -9,6 +9,8 @@ import { DISPLAY_SEGMENTS } from "../model/types";
 import { Simulation, heatThreshold } from "../sim/simulation";
 import { segmentCurrent } from "../parts/display";
 import { formatSI } from "../sim/resistorCodes";
+import { HOLE_BY_ID } from "../model/breadboard";
+import { pinNode } from "../sim/nodes";
 import { free, noHurt, of, type Lesson, type LessonStep } from "./lessons";
 import { SEGMENTS, type KitItem, type LogicFunc } from "./levels";
 
@@ -68,6 +70,70 @@ function displaySteps(peak: number, hurt: Set<string>): LessonStep[] {
 
 /** Сколько раз проверка нажимает кнопку: хватает, чтобы пройти 9 → 0 с любой начальной цифры. */
 const PRESSES = 11;
+
+// ─── ЦАП: вход кода выведен на макетку, выход — на столбец 30 под нагрузкой ────
+
+/** Куда выведены входы кода (нижняя половина BB1, ряд j) и где выход ЦАП (верхняя, ряд a). */
+export const DAC_PINS = { ser: "j2", srclk: "j4", rclk: "j6", out: "a30" };
+/** Нагрузка на выходе ЦАП, Ом: без буфера лестница R-2R (10 кОм) под ней просядет. */
+const DAC_LOAD = 10_000;
+
+/** Стол ЦАП: тумблер SER и кнопки SRCLK, RCLK без дребезга (к +5 В, подтяжка 10 кОм к общему) и нагрузка на выходе. */
+function dacBench(id: string): Scene {
+  const s = projectBench(id);
+  const plus = { comp: "G1", pin: 1 }, minus = { comp: "G1", pin: 0 };
+  const res = (rid: string, ohms: number, x: number, z: number): Component => ({ id: rid, type: "resistor", variant: "tht", ohms, smdSize: "0805", placement: free(x, z), stock: true });
+  const inputs: [string, "switch" | "button", string, number][] = [["SA1", "switch", DAC_PINS.ser, -8], ["SB1", "button", DAC_PINS.srclk, 0], ["SB2", "button", DAC_PINS.rclk, 8]];
+  inputs.forEach(([cid, type, hole, x], i) => {
+    s.components.push(
+      (type === "switch" ? { id: cid, type, closed: false, placement: free(x, 22), stock: true } : { id: cid, type, placement: free(x, 22), stock: true }) as Component,
+      res(`RS${i + 1}`, 10_000, x, 30),
+    );
+    s.wires.push(
+      { id: `WI${i}a`, a: plus, b: { comp: cid, pin: 0 }, color: "#c8261f" },
+      { id: `WI${i}b`, a: { comp: cid, pin: 1 }, b: { hole }, color: "#e3b21c" },
+      { id: `WI${i}c`, a: { comp: cid, pin: 1 }, b: { comp: `RS${i + 1}`, pin: 0 }, color: "#e3b21c" },
+      { id: `WI${i}d`, a: { comp: `RS${i + 1}`, pin: 1 }, b: minus, color: "#1b1d20" },
+    );
+  });
+  s.components.push(res("RL", DAC_LOAD, 24, -18));
+  s.wires.push({ id: "WL1", a: { hole: DAC_PINS.out }, b: { comp: "RL", pin: 0 }, color: "#2f9e5a" }, { id: "WL2", a: { comp: "RL", pin: 1 }, b: minus, color: "#1b1d20" });
+  return s;
+}
+
+/** Коды проверки ЦАП: до 170 (3,3 В) — выше LM358 при 5 В не достаёт (по даташиту до питания − 1,5 В). */
+export const DAC_CODES = [0, 1, 85, 128, 170];
+
+/** Прогнать ЦАП: вдвинуть коды старшим битом вперёд, защёлкнуть и измерить выход. */
+export function dacRun(scene: Scene) {
+  const r = runner(scene);
+  const ser = r.sim.scene.components.find((c) => c.id === "SA1") as Extract<Component, { type: "switch" }> | undefined;
+  const g1 = r.sim.scene.components.find((c) => c.id === "G1")!;
+  const out = () => (r.sim.solution.voltage.get(HOLE_BY_ID.get(DAC_PINS.out)!.node) ?? 0) - (r.sim.solution.voltage.get(pinNode(g1, 0)) ?? 0);
+  const press = (id: string) => {
+    r.sim.held.add(id);
+    r.run(0.02);
+    r.sim.held.delete(id);
+    r.run(0.02);
+  };
+  r.run(0.2);
+  const rows: { code: number; v: number; drift: number }[] = [];
+  let last = out();
+  for (const code of DAC_CODES) {
+    let drift = 0;
+    for (let bit = 7; bit >= 0; bit--) {
+      if (ser) ser.closed = !!(code & (1 << bit));
+      r.run(0.02);
+      press("SB1");
+      drift = Math.max(drift, Math.abs(out() - last));
+    }
+    press("SB2");
+    r.run(0.03);
+    last = out();
+    rows.push({ code, v: last, drift });
+  }
+  return { rows, hurt: r.hurt };
+}
 
 const chip = (func: LogicFunc, count = 1): KitItem => ({ part: "chip", func, count });
 const DISPLAY_KIT: KitItem = { part: "other", type: "display", tool: "display", preset: {}, label: "индикатор SC56-11SRWA", count: 1 };
@@ -168,6 +234,36 @@ export const PROJECTS: Lesson[] = [
         { text: `Цифры идут подряд: ${changes.map((c) => c.d).join(" ") || "индикатор не меняется"}`, ok: changes.length >= 4 && inOrder },
         { text: `Каждая цифра — 0,85–1,15 с — сейчас ${period ? `в среднем ${formatSI(period, "с")}` : "—"}`, ok: gaps.length >= 3 && even },
         ...displaySteps(r.peak(), r.hurt),
+      ];
+    },
+  },
+  {
+    id: "proj-dac",
+    project: true,
+    title: "ЦАП на 8 бит",
+    about:
+      "Цифро-аналоговый преобразователь: восьмибитный код превращается в напряжение код/256 · 5 В. Код вдвигают по одному биту, старшим вперёд: SER — тумблер SA1 (столбец 2, ряды f–j), такт сдвига — кнопка SB1 (столбец 4), защёлка — кнопка SB2 (столбец 6); включено или нажато — 5 В, иначе 0. Выход — на столбец 30 (ряды a–e), там уже стоит нагрузка 10 кОм к общему. Питание 5 В — на верхних шинах. Проверка вдвигает коды 0, 1, 85, 128 и 170 и сравнивает выход с код/256 · 5 В: не дальше 20 мВ (чуть больше ступеньки в 19,5 мВ); пока вдвигается новый код, выход не должен меняться.",
+    hints: [
+      "Какая из открытых микросхем принимает код по одному биту и выдаёт его разом на восемь выводов? А как из восьми «да или нет» сложить напряжение, в котором старший бит весит вдвое больше соседнего, — в наборе только два номинала резисторов, 10 и 20 кОм.",
+      "Выход лестницы резисторов слабый: нагрузка 10 кОм его заметно просадит. Что из набора повторяет напряжение и при этом даёт ток?",
+    ],
+    kit: [
+      chip("sreg595"),
+      chip("opamp2"),
+      { part: "resistor", ohms: 10_000, count: 7 },
+      { part: "resistor", ohms: 20_000, count: 9 },
+    ],
+    start: () => dacBench("proj-dac"),
+    check(scene) {
+      const { rows, hurt } = dacRun(scene);
+      const want = (c: number) => (c / 256) * 5;
+      const bad = rows.find((x) => Math.abs(x.v - want(x.code)) > 0.02);
+      const drift = Math.max(...rows.map((x) => x.drift));
+      const v = (x: number) => formatSI(x, "В");
+      return [
+        { text: `Выход = код/256 · 5 В ± 20 мВ: ${rows.map((x) => `${x.code} → ${v(x.v)}`).join(", ")}${bad ? ` (у ${bad.code} нужно ${v(want(bad.code))})` : ""}`, ok: !bad },
+        { text: `Пока вдвигается код, выход не меняется (не больше чем на 20 мВ) — сейчас до ${formatSI(drift, "В")}`, ok: drift <= 0.02 },
+        noHurt([...hurt]),
       ];
     },
   },

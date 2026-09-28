@@ -65,7 +65,9 @@ export function limitJunction(vnew: number, vold: number, p: DiodeParams): numbe
  * Тогда берём только половину шага — качели гаснут.
  */
 export function damp(vnew: number, vold: number, iter: number): number {
-  return iter > 20 ? vold + (vnew - vold) / 2 : vnew;
+  // Каждые следующие 20 итераций — шаг ещё вдвое короче: у каскадов с большим усилением
+  // (ОУ без обратной связи, с висящими входами) половины шага не хватает
+  return iter > 20 ? vold + (vnew - vold) / 2 ** Math.floor((iter - 1) / 20) : vnew;
 }
 
 /**
