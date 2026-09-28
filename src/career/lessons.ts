@@ -20,6 +20,8 @@ export interface Lesson {
   id: string;
   /** Урок-ремонт: стол с неисправностью, показаний деталей не видно (Scene.career.repair). */
   repair?: true;
+  /** Проект: устройство из открытых микросхем; закрыт, пока они не открыты. */
+  project?: true;
   title: string;
   about: string;
   hints: [string, string];

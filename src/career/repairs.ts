@@ -16,6 +16,7 @@ import { formatSI } from "../sim/resistorCodes";
 import { bench, blinkPeriod, free, ledOk, lessonById, mA, noHurt, of, settle, type Lesson, type LessonStep } from "./lessons";
 import { referenceChips } from "./build";
 import type { KitItem } from "./levels";
+import { PROJECTS } from "./projects";
 
 /** Стол ремонта: показаний деталей не видно. */
 const repair = (s: Scene): Scene => ({
@@ -312,5 +313,5 @@ export const REPAIRS: Lesson[] = [
 ];
 
 /** Урок введения или ремонта по id. */
-export const stageById = (id: string): Lesson | undefined => lessonById(id) ?? REPAIRS.find((l) => l.id === id);
+export const stageById = (id: string): Lesson | undefined => lessonById(id) ?? REPAIRS.find((l) => l.id === id) ?? PROJECTS.find((l) => l.id === id);
 

@@ -383,6 +383,8 @@ export class Simulation {
     for (const c of this.flat) {
       if (!this.out(c)) part(c).remember?.(c, this);
     }
+    // Модели микросхем запоминают входы на каждом подшаге: иначе импульс короче шага (дребезг, быстрый генератор) не виден счётчику
+    if (ok) this.commit();
     return ok ? this.heat(h) : [];
   }
 

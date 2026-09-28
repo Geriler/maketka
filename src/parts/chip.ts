@@ -135,11 +135,18 @@ export const chip: PartDef<Chip> = {
     // определён; выход, который от него зависит, тоже не определён
     let q = -1;
     if (span > 0.5) {
-      const prev = sim.memory.get(`${c.id}:seq`) as ModelState | undefined;
+      // Схема с памятью качается внутри шага (счёт → сброс → снова тот же фронт…): тогда входы
+      // идут как события по порядку — сброс, отпущенный без нового фронта, оставляет ноль
+      if (model.state && (shared.per?.get(c.id) ?? 0) >= 2) sim.junction.set(`${c.id}:rl`, 1);
+      const prev = sim.junction.get(`${c.id}:rl`) ? runState(c, model, sim) : (sim.memory.get(`${c.id}:seq`) as ModelState | undefined);
       const levels = inputLevels(c, model, sim, prev);
       const open = levels.map((l, i) => (l === undefined ? i : -1)).filter((i) => i >= 0);
       const tries = open.length > 4 ? [] : Array.from({ length: 1 << open.length }, (_, m) => levels.map((l, i) => l ?? !!(m & (1 << open.indexOf(i)))));
       const results = tries.map((bits) => model.logic(bits, prev));
+      if (model.state && tries.length === 1) {
+        sim.junction.set(`${c.id}:rs`, model.state(tries[0], prev));
+        sim.junction.set(`${c.id}:ri`, tries[0].reduce((m, b, i) => m | (b ? 1 << i : 0), 0));
+      }
       q = 0;
       model.outputs.forEach((_, k) => {
         const vals = new Set(results.map((r) => r[k]));
@@ -167,9 +174,11 @@ export const chip: PartDef<Chip> = {
     const model = sim.modelOf(c.id);
     const q = sim.junction.get(`${c.id}:q`);
     if (!model || q === undefined || q < 0) return;
-    const prev = sim.memory.get(`${c.id}:seq`) as ModelState | undefined;
+    const looped = !!sim.junction.get(`${c.id}:rl`);
+    const prev = looped ? runState(c, model, sim) : (sim.memory.get(`${c.id}:seq`) as ModelState | undefined);
     const inputs = inputLevels(c, model, sim, prev).map((l) => !!l);
     const state = model.state?.(inputs, prev);
+    for (const k of ["rs", "ri", "rl"]) sim.junction.delete(`${c.id}:${k}`);
     sim.memory.set(`${c.id}:seq`, { inputs, outputs: model.outputs.map((_, k) => !!(q & (1 << k))), ...(state !== undefined ? { state } : {}) } satisfies ModelState);
   },
   // Перегрузка: самый нагруженный выход модели (предел как у логики 74-й серии) и питание сверх предельного
@@ -240,6 +249,16 @@ function defSupply(c: Chip, def: ChipDef, sim: Simulation): number | undefined {
  * определён (так ведёт себя висящий). Триггер Шмитта (model.hyst): выше верхнего порога — единица,
  * ниже нижнего — ноль, между — как было на прошлом расчёте.
  */
+/** Состояние схемы с памятью после последнего события этого шага (в sim.junction — откатывается вместе с шагом). */
+function runState(c: Chip, model: ChipModel, sim: Simulation): ModelState | undefined {
+  const base = sim.memory.get(`${c.id}:seq`) as ModelState | undefined;
+  const rs = sim.junction.get(`${c.id}:rs`);
+  const ri = sim.junction.get(`${c.id}:ri`);
+  if (rs === undefined || ri === undefined) return base;
+  const inputs = model.inputs.map((_, i) => !!(ri & (1 << i)));
+  return { inputs, outputs: model.logic(inputs, base), state: rs };
+}
+
 function inputLevels(c: Chip, model: ChipModel, sim: Simulation, prev?: ModelState): (boolean | undefined)[] {
   const v = (p: number) => sim.solution.voltage.get(pinNode(c, p - 1)) ?? 0;
   const gnd = v(model.gnd), span = v(model.vcc) - gnd;

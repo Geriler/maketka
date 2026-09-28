@@ -1167,6 +1167,8 @@ export class App {
   readonly career = new CareerPanel(this);
   /** Последняя проверка уровня (сбрасывается при смене стола). */
   lastCheck?: CheckResult;
+  /** Проверка проекта уже запущена (идёт после паузы на отрисовку). */
+  private checking = false;
   private careerBar?: HTMLElement;
 
   setCareerOpen(open: boolean): void {
@@ -1193,6 +1195,8 @@ export class App {
   startLevel(id: string, fresh = false): void {
     const lesson = stageById(id);
     if (lesson) {
+      const need = lesson.project ? missing(lesson) : [];
+      if (need.length) return this.toast("Пока закрыто", `Сначала откройте: ${need.join(", ")}.`);
       const saved = fresh ? undefined : loadSlot(id);
       this.replaceScene(saved ? (JSON.parse(JSON.stringify(saved)) as Scene) : lesson.start());
       this.resetHistory();
@@ -1236,8 +1240,19 @@ export class App {
   }
 
   /** Проверить сборку уровня; получилось — компонент открыт. */
-  checkLevel(): void {
+  checkLevel(now = false): void {
     const lesson = this.careerLesson();
+    // Проект проверяется несколько секунд расчёта — сначала показать, что проверка идёт
+    if (lesson?.project && !now) {
+      if (this.checking) return;
+      this.checking = true;
+      this.toast("Проверяю…", "Проверка гоняет стол несколько секунд.");
+      setTimeout(() => {
+        this.checking = false;
+        if (this.careerLesson() === lesson) this.checkLevel(true);
+      }, 60);
+      return;
+    }
     if (lesson) {
       const steps = lesson.check(this.scene);
       const ok = steps.every((x) => x.ok);
@@ -1245,7 +1260,7 @@ export class App {
       if (ok) {
         const first = !isDone(lesson.id);
         if (!passLesson(lesson.id)) this.toast("Прогресс не сохранился", "Хранилище браузера недоступно.");
-        this.toast(first ? "Урок пройден!" : "Всё верно", `«${lesson.title}» — готово. Дальше — на карте.`);
+        this.toast(first ? (lesson.project ? "Проект работает!" : lesson.repair ? "Починено!" : "Урок пройден!") : "Всё верно", `«${lesson.title}» — готово. Дальше — на карте.`);
       } else recordFail(lesson.id);
       this.careerOpen = false;
       return this.setCareerOpen(true);

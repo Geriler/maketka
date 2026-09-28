@@ -5,6 +5,7 @@
 
 import { LESSONS, type Lesson } from "../career/lessons";
 import { REPAIRS, stageById } from "../career/repairs";
+import { PROJECTS } from "../career/projects";
 import { FUNC_NAMES, LEVELS, gateIo, kitLabel, type Level, type LogicFunc } from "../career/levels";
 import { bestOf, isDone, loadSlot, missing } from "../career/session";
 import { metricsHtml } from "./career";
@@ -49,7 +50,7 @@ export class MenuScreen {
         <button class="menu-card career${current === "career" ? " current" : ""}" data-mode="career">
           <b>Карьера</b>
           <span>Открывайте компоненты, собирая их из выданного набора деталей — от инвертора до четырёхразрядного сумматора.</span>
-          <small>Открыто ${done} из ${LEVELS.length} · уроков ${LESSONS.filter((l) => isDone(l.id)).length} из ${LESSONS.length} · ремонтов ${REPAIRS.filter((l) => isDone(l.id)).length} из ${REPAIRS.length}</small>
+          <small>Открыто ${done} из ${LEVELS.length} · уроков ${LESSONS.filter((l) => isDone(l.id)).length} из ${LESSONS.length} · ремонтов ${REPAIRS.filter((l) => isDone(l.id)).length} из ${REPAIRS.length} · проектов ${PROJECTS.filter((l) => isDone(l.id)).length} из ${PROJECTS.length}</small>
         </button>
       </div>
       <p class="sub">У каждого режима свой стол и свои сохранения.</p>
@@ -140,6 +141,8 @@ const PLACE: Record<string, [number, number]> = {
   hc85: [8, 2.3],
   alu4: [7, 3.5],
   hc595: [9, 8.4],
+  "proj-stopwatch": [10, 2.5],
+  "proj-counter": [10, 6.5],
 };
 /** Короткие подписи уроков на карте. */
 const SHORT: Record<string, string> = {
@@ -237,6 +240,11 @@ export class CareerMap {
       if (!n.length) edge("parts", l.id, true);
       for (const f of n) for (const src of LEVELS.filter((x) => x.func === f)) edge(src.id, l.id, isDone(src.id));
     }
+    // Проекты: от микросхем набора (базовые вентили слева не тянем через всю карту)
+    for (const pr of PROJECTS) for (const k of pr.kit) {
+      if (k.part !== "chip") continue;
+      for (const src of LEVELS.filter((x) => x.func === k.func && !x.intermediate && PLACE[x.id][0] >= 5)) edge(src.id, pr.id, isDone(src.id));
+    }
     const nodes = [
       `<g class="node done root" data-node="parts" transform="translate(${at("parts").x} ${at("parts").y})"><rect width="${W}" height="${H}" rx="10"/><text x="14" y="27" class="t">Детали</text><text x="14" y="47" class="s">транзисторы и резисторы</text></g>`,
       ...LESSONS.map((l, i) => {
@@ -253,6 +261,14 @@ export class CareerMap {
           <text x="14" y="27" class="t">Ремонт ${i + 1}${isDone(l.id) ? " ✓" : ""}</text>
           <text x="14" y="47" class="s">${esc(l.title.length > 25 ? l.title.slice(0, 24) + "…" : l.title)}</text></g>`;
       }),
+      ...PROJECTS.map((l, i) => {
+        const p = at(l.id);
+        const state = isDone(l.id) ? "done" : missing(l).length ? "locked" : "open";
+        return `<g class="node ${state} lesson project${this.chosen === l.id ? " chosen" : ""}" data-node="${l.id}" transform="translate(${p.x} ${p.y})" tabindex="0" role="button" aria-label="${esc(l.title)}">
+          <rect width="${W}" height="${H}" rx="10"/>
+          <text x="14" y="27" class="t">Проект ${i + 1}${state === "done" ? " ✓" : state === "locked" ? " 🔒" : ""}</text>
+          <text x="14" y="47" class="s">${esc(l.title)}</text></g>`;
+      }),
       ...LEVELS.map((l) => {
         const p = at(l.id);
         const state = isDone(l.id) ? "done" : missing(l).length ? "locked" : "open";
@@ -265,7 +281,7 @@ export class CareerMap {
     const chosen = this.chosen ? LEVELS.find((l) => l.id === this.chosen) : undefined;
     const lesson = this.chosen ? stageById(this.chosen) : undefined;
     this.el.innerHTML = `<header class="map-head">
-        <div><div class="eyebrow">карьера</div><h2>Открыто ${done} из ${LEVELS.length} · уроков ${LESSONS.filter((l) => isDone(l.id)).length} из ${LESSONS.length} · ремонтов ${REPAIRS.filter((l) => isDone(l.id)).length} из ${REPAIRS.length}</h2></div>
+        <div><div class="eyebrow">карьера</div><h2>Открыто ${done} из ${LEVELS.length} · уроков ${LESSONS.filter((l) => isDone(l.id)).length} из ${LESSONS.length} · ремонтов ${REPAIRS.filter((l) => isDone(l.id)).length} из ${REPAIRS.length} · проектов ${PROJECTS.filter((l) => isDone(l.id)).length} из ${PROJECTS.length}</h2></div>
         <div class="row">
           ${this.host.hasTable() ? `<button class="btn inline" data-map="close">К столу</button>` : ""}
           <button class="btn inline" data-map="workshop">Мастерская</button>
@@ -286,12 +302,16 @@ export class CareerMap {
 
   private lessonCard(l: Lesson): string {
     const started = !!loadSlot(l.id);
-    return `<div class="eyebrow">${l.repair ? `ремонт ${REPAIRS.indexOf(l) + 1}` : `введение · урок ${LESSONS.indexOf(l) + 1}`}</div>
+    const need = l.project ? missing(l) : [];
+    const buttons = need.length
+      ? `<p class="sub bad">Сначала откройте: ${esc(need.join(", "))}.</p>`
+      : `<div class="row"><button class="btn inline primary" data-map="start">${started ? "Продолжить" : isDone(l.id) ? "Пройти ещё раз" : "Начать"}</button>
+      ${started ? `<button class="btn inline" data-map="restart">Начать заново</button>` : ""}</div>`;
+    return `<div class="eyebrow">${l.repair ? `ремонт ${REPAIRS.indexOf(l) + 1}` : l.project ? `проект ${PROJECTS.indexOf(l) + 1} · из открытых микросхем` : `введение · урок ${LESSONS.indexOf(l) + 1}`}</div>
       <h3>${esc(l.title)}${isDone(l.id) ? " ✓" : ""}</h3>
       <p>${esc(l.about)}</p>
       ${l.kit.length ? `<div class="eyebrow">набор</div><ul class="kitlist">${l.kit.map((k) => `<li>${esc(kitLabel(k))} × ${k.count}</li>`).join("")}</ul>` : ""}
-      <div class="row"><button class="btn inline primary" data-map="start">${started ? "Продолжить" : isDone(l.id) ? "Пройти ещё раз" : "Начать"}</button>
-      ${started ? `<button class="btn inline" data-map="restart">Начать заново</button>` : ""}</div>`;
+      ${buttons}`;
   }
 
   private card(l: Level): string {
