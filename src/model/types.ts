@@ -234,9 +234,10 @@ export type Placement =
 
 /**
  * Скрытая неисправность (для уровней ремонта): снаружи деталь, провод или дорожка выглядят целыми.
- * open — обрыв внутри: ток не идёт; short — пробой: выводы pins[0] и pins[1] замкнуты накоротко.
+ * open — обрыв внутри: ток не идёт; short — пробой: выводы pins[0] и pins[1] замкнуты накоротко;
+ * segment — у индикатора перегорел один сегмент (номер в DISPLAY_SEGMENTS), остальные целы.
  */
-export type Fault = { open: true } | { short: [number, number] };
+export type Fault = { open: true } | { short: [number, number] } | { segment: number };
 
 interface Base {
   id: string;

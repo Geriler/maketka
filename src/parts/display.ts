@@ -77,7 +77,9 @@ export const display: PartDef<Display> = {
     const burned = sim.state(c.id).burned;
     DISPLAY_SEGMENTS.forEach((s, k) => {
       const a = pinNode(c, s.pin - 1);
-      if (burned) return void out.push({ id: key(c, k), a, b: k1, r: Infinity });
+      // Сгоревший индикатор — все сегменты в обрыве; скрытая неисправность ремонта — один
+      const dead = burned || (!!c.fault && "segment" in c.fault && c.fault.segment === k);
+      if (dead) return void out.push({ id: key(c, k), a, b: k1, r: Infinity });
       const { r, emf } = diodeBranch(SEG, sim.junction.get(key(c, k)) ?? 0);
       out.push({ id: key(c, k), a, b: k1, r, emf });
     });
