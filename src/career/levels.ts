@@ -8,10 +8,10 @@
  */
 
 import type { ChipPackage, ChipPinRole } from "../model/breadboard";
-import type { MosfetKind, TransistorKind } from "../model/types";
+import type { DiodeKind, MosfetKind, TransistorKind } from "../model/types";
 
 /** Логическая функция компонента. */
-export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2";
+export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5";
 
 /** Деталь набора: сколько штук и что именно (тип и номинал). */
 export type KitItem =
@@ -34,7 +34,7 @@ export type KitItem =
  */
 export interface Recipe {
   /** uF — керамический конденсатор такой ёмкости, мкФ. */
-  parts: { id: string; holes: string[]; kind?: string; ohms?: number; uF?: number; diode?: "1N4148"; func?: LogicFunc }[];
+  parts: { id: string; holes: string[]; kind?: string; ohms?: number; uF?: number; diode?: DiodeKind; func?: LogicFunc }[];
   nets: string[][];
 }
 
@@ -73,7 +73,12 @@ export interface Level {
    * Что проверять кроме таблицы: sweep — вход плавно растёт и падает, ищутся пороги и гистерезис
    * (триггер Шмитта); osc — таблицы нет, выход должен генерировать с нужным периодом (генератор).
    */
-  check?: "sweep" | "osc" | "bounce" | "compare" | "timer" | "opamp";
+  check?: "sweep" | "osc" | "bounce" | "compare" | "timer" | "opamp" | "regulator";
+  /**
+   * Стабилизатор (check: regulator): выход vout при входе vin и токе нагрузки iout (мин, макс), В и А;
+   * допустимые изменения выхода по входу (line) и по нагрузке (load), В; ток покоя iq, А; номинал vnom, В.
+   */
+  reg?: { vout: [number, number]; vin: [number, number]; iout: [number, number]; line: number; load: number; iq: number; vnom: number; vtyp?: [number, number] };
   /** Выходы с открытым коллектором (стоком): на проверке их подтягивают к питанию резистором 10 кОм. */
   openDrain?: number[];
   /** Каналы компаратора (check: compare): выводы входов + и − и выхода. */
@@ -285,6 +290,10 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
       return [a && !b];
     case "opamp2":
       return [a && !b, c && !bits[3]];
+    // Стабилизаторы: таблицей не проверяются — см. check: regulator
+    case "vref":
+    case "reg5":
+      return [a];
     // Дешифратор 2 → 4 (A, B): выход с номером кода — ноль, остальные — единица
     case "dec2":
       return [0, 1, 2, 3].map((i) => i !== num(bits.slice(0, 2)));
@@ -2009,6 +2018,83 @@ export const LEVELS: Level[] = [
       ],
     },
   },
+  // ─── Стабилизатор: ИОН на стабилитроне → LM78L05 ──────────────────────────────────────────
+  {
+    id: "vref",
+    func: "vref",
+    part: "ИОН 5 В",
+    title: "Источник опорного напряжения",
+    intermediate: true,
+    about: `Выдаёт около 5 В, которые почти не зависят от входного напряжения: вход меняется от 7 до 20 В — выход не больше чем на 30 мВ; нагрузка до 0,5 мА — не больше чем на 30 мВ; сам выход — 4,95–5,15 В. Ток покоя — не больше 3,5 мА при 10 В. Выводы: 1 IN, 2 GND, 3 OUT, 4 и 5 не подключены. ${STEP}`,
+    hints: [
+      "Стабилитрон держит напряжение, но оно всё-таки зависит от тока через него: через резистор от входа ток будет меняться вместе с входом. Что держит ток, а не напряжение?",
+      "Ток транзистора задаёт напряжение на его эмиттерном резисторе. Чем держать постоянное напряжение между базой и входом, если стабилитрон уже занят?",
+    ],
+    roles: ["vcc", "gnd", "out", "nc", "nc"],
+    names: ["IN", "", "OUT", "", ""],
+    io: { inputs: [1], outputs: [3] },
+    check: "regulator",
+    reg: { vout: [4.95, 5.15], vin: [7, 20], iout: [0, 0.0005], line: 0.03, load: 0.03, iq: 0.0035, vnom: 5 },
+    absMax: 30,
+    room: 20,
+    kit: [
+      { part: "other", type: "diode", tool: "diode", preset: { kind: "BZX55C5V1" }, label: "стабилитрон BZX55C5V1", count: 1 },
+      { part: "bjt", kind: "BC557", count: 1 },
+      { part: "other", type: "diode", tool: "diode", preset: { kind: "1N4148" }, label: "диод 1N4148", count: 2 },
+      { part: "resistor", ohms: 220, count: 1 },
+      { part: "resistor", ohms: 10000, count: 1 },
+    ],
+    recipe: {
+      parts: [
+        // Источник тока: два диода держат 1,2 В между входом и базой, на R1 — 1,2 В минус Uбэ
+        pnp("VT1", "E", 4), res("R1", 220, "C6", "C9"), vd("VD1", "A", "B", 5), vd("VD2", "C", "D", 5), res("R2", 10000, "F5", "H5"),
+        { id: "VD3", diode: "BZX55C5V1", holes: ["k:G10", "k:E10"] },
+      ],
+      nets: [
+        ["P1", "R1.1", "VD1.1"],
+        ["R1.2", "VT1.E"],
+        ["VD1.2", "VD2.1"],
+        ["VD2.2", "VT1.B", "R2.1"],
+        ["VT1.C", "VD3.2", "P3"],
+        ["VD3.1", "R2.2", "P2"],
+      ],
+    },
+  },
+  {
+    id: "lm78l05",
+    func: "reg5",
+    part: "LM78L05",
+    title: "Стабилизатор 5 В",
+    about:
+      "Настоящая микросхема: из нестабильного входа 7–35 В делает 5 В для схем. Выводы — как у LM78L05 в корпусе SOIC-8 (TI, SNVS754): 1 VOUT, 2, 3, 6, 7 — GND, 4, 5 — не подключены, 8 VIN. Проверка — по даташиту: 4,8–5,2 В при 10 В и 40 мА; 4,75–5,25 В при входе 7–12 В и нагрузке 1–40 мА (даташит — до 20 В, но у BC547 не хватит мощности); вход меняется от 7 до 12 В — выход не больше чем на 75 мВ; нагрузка от 1 до 40 мА — не больше чем на 30 мВ; ток покоя — не больше 5 мА.",
+    hints: [
+      "Опорное напряжение уже есть — но с него нельзя брать 40 мА. Кто будет сравнивать выход с опорным и подправлять, а кто — отдавать ток нагрузки?",
+      "Выход усилителя слабый, а входное напряжение для него — питание. Чем он может управлять, чтобы ток шёл прямо со входа на выход?",
+    ],
+    roles: ["out", "gnd", "gnd", "nc", "nc", "gnd", "gnd", "vcc"],
+    names: ["VOUT", "", "", "", "", "", "", "VIN"],
+    io: { inputs: [8], outputs: [1] },
+    check: "regulator",
+    reg: { vout: [4.75, 5.25], vin: [7, 12], iout: [0.001, 0.04], line: 0.075, load: 0.03, iq: 0.005, vnom: 5, vtyp: [4.8, 5.2] },
+    absMax: 35,
+    package: "DIP",
+    room: 40,
+    kit: [
+      { part: "chip", func: "vref", count: 1 },
+      { part: "chip", func: "opamp", count: 1 },
+      { part: "bjt", kind: "BC547", count: 1 },
+    ],
+    recipe: {
+      parts: [sot("D1", "vref", "D", 2), sot("D2", "opamp", "D", 7), bjt("VT1", "H", 2)],
+      nets: [
+        ["P8", "D1.1", "D2.5", "VT1.C"],
+        ["P2", "P3", "P6", "P7", "D1.2", "D2.2"],
+        ["D1.3", "D2.1"],
+        ["D2.4", "VT1.B"],
+        ["VT1.E", "P1", "D2.3"],
+      ],
+    },
+  },
   // ─── Числа: разряд компаратора → 74HC85; 74HC595; проект АЛУ ─────────────────────────────
   {
     id: "mag1",
@@ -2257,6 +2343,8 @@ export const FUNC_NAMES: Record<LogicFunc, string> = {
   cmp2: "Два компаратора",
   opamp: "Операционный усилитель",
   opamp2: "Два операционных усилителя",
+  vref: "Источник опорного напряжения",
+  reg5: "Стабилизатор 5 В",
   timer: "Таймер 555",
   mag1: "Разряд компаратора",
   mag4: "Компаратор чисел 4 бит",

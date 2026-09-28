@@ -153,7 +153,8 @@ describe("карьера на SMD", () => {
   });
 
   // Уровни из транзисторов, собранные на SMD-парах, проходят ту же проверку
-  const transistorLevels = LEVELS.filter((l) => l.kit.some((k) => k.part === "mosfet" || k.part === "bjt"));
+  // (только те, где SMD-пара есть: у p-n-p BC557 её в модели нет — на плате под SMD он ставится выводным)
+  const transistorLevels = LEVELS.filter((l) => l.kit.some((k) => (k.part === "mosfet" || k.part === "bjt") && SMD_TWIN[k.kind]));
   for (const level of transistorLevels) {
     it(`${level.id}: на ${[...new Set(level.kit.flatMap((k) => (k.part === "mosfet" || k.part === "bjt" ? [SMD_TWIN[k.kind]] : [])))].join(", ")} проходит проверку`, () => {
       const smd: Level = { ...level, recipe: { ...level.recipe, parts: level.recipe.parts.map((p) => (p.kind ? { ...p, kind: SMD_TWIN[p.kind] ?? p.kind } : p)) } };

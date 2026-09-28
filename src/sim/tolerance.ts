@@ -1,6 +1,7 @@
 import {
   BATTERIES,
   diodeSpec,
+  zenerSpec,
   LAMPS,
   LEDS,
   MOSFETS,
@@ -88,6 +89,12 @@ export function ledVf(c: Extract<Component, { type: "led" }>, tol: Tolerance): n
 /** Ток насыщения диода: множитель 2^u меняет прямое падение на n·Vt·ln 2 ≈ ±32 мВ (1N4007). */
 export function diodeIs(c: Extract<Component, { type: "diode" }>, tol: Tolerance): number {
   return diodeSpec(c).is * 2 ** deviation(tol, c.id, "is");
+}
+
+/** Напряжение стабилизации: номинал или (в режиме разброса) в пределах даташита. */
+export function zenerVz(c: Extract<Component, { type: "diode" }>, tol: Tolerance): number {
+  const [min, nom, max] = zenerSpec(c)!.vz;
+  return tol.enabled ? within(deviation(tol, c.id, "vz"), min, max) : nom;
 }
 
 export function betaF(c: Extract<Component, { type: "transistor" }>, tol: Tolerance): number {

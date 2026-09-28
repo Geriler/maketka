@@ -68,8 +68,15 @@ export function voltsSelect(variant: "electrolytic" | "ceramic", value: number):
 }
 
 export function diodeSelect(value: DiodeKind): string {
-  const note: Record<DiodeKind, string> = { "1N4148": "импульсный, стекло", "1N4007": "выпрямительный", "1N5408": "выпрямительный, мощный" };
-  return selectField("diode", "Модель", (Object.keys(DIODES) as DiodeKind[]).map((k) => [k, `${DIODES[k].label} — до ${formatSI(DIODES[k].maxA, "А")}, ${note[k]}`]), value);
+  const note: Record<DiodeKind, string> = {
+    "1N4148": "импульсный, стекло",
+    "1N4007": "выпрямительный",
+    "1N5408": "выпрямительный, мощный",
+    BZX55C5V1: "стабилитрон 5,1 В, 0,5 Вт",
+    BZX55C5V6: "стабилитрон 5,6 В, 0,5 Вт",
+    BZX55C6V2: "стабилитрон 6,2 В, 0,5 Вт",
+  };
+  return selectField("diode", "Модель", (Object.keys(DIODES) as DiodeKind[]).map((k) => [k, `${DIODES[k].label} — ${"zener" in DIODES[k] ? note[k] : `до ${formatSI(DIODES[k].maxA, "А")}, ${note[k]}`}`]), value);
 }
 
 export function ledColorSelect(value: string): string {

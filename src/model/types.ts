@@ -99,7 +99,22 @@ export const DIODES = {
   "1N4148": { label: "1N4148", is: 2.52e-9, n: 1.752, rs: 0.568, maxA: 0.2, lengthMm: 3.8, diameterMm: 1.8, glass: true },
   "1N4007": { ...DIODE_1N4007, lengthMm: 5.2, diameterMm: 2.7, glass: false },
   "1N5408": { label: "1N5408", is: 63e-9, n: 1.7, rs: 0.014, maxA: 3, lengthMm: 9.5, diameterMm: 5.3, glass: false },
+  // Стабилитроны Vishay BZX55 (док. 85604), DO-35: Vz мин/ном/макс при 5 мА, Zz при 5 мА — с запасом
+  // до табличного максимума (35, 25, 10 Ом), Ptot 0,5 Вт; прямая ветвь — как у маломощного кремниевого
+  BZX55C5V1: { label: "BZX55C5V1", is: 2.52e-9, n: 1.752, rs: 1, maxA: 0.2, lengthMm: 3.8, diameterMm: 1.8, glass: true, zener: { vz: [4.8, 5.1, 5.4], zz: 20, ptot: 0.5 } },
+  BZX55C5V6: { label: "BZX55C5V6", is: 2.52e-9, n: 1.752, rs: 1, maxA: 0.2, lengthMm: 3.8, diameterMm: 1.8, glass: true, zener: { vz: [5.2, 5.6, 6.0], zz: 15, ptot: 0.5 } },
+  BZX55C6V2: { label: "BZX55C6V2", is: 2.52e-9, n: 1.752, rs: 1, maxA: 0.2, lengthMm: 3.8, diameterMm: 1.8, glass: true, zener: { vz: [5.8, 6.2, 6.6], zz: 8, ptot: 0.5 } },
 } as const;
+
+/** Пробой стабилитрона: Vz мин/ном/макс при 5 мА, дифференциальное сопротивление при 5 мА, Ом, предельная мощность, Вт. */
+export type ZenerSpec = { vz: readonly [number, number, number]; zz: number; ptot: number };
+/** Параметры пробоя, если диод — стабилитрон. */
+export function zenerSpec(c: { kind?: DiodeKind }): ZenerSpec | undefined {
+  const d = diodeSpec(c);
+  return "zener" in d ? d.zener : undefined;
+}
+/** Ток, при котором по даташиту задано Vz, А. */
+export const ZENER_TEST_A = 0.005;
 export type DiodeKind = keyof typeof DIODES;
 
 /** Модель диода (в старых схемах нет — 1N4007). */
@@ -413,6 +428,8 @@ export interface ChipDef {
   scene: Scene;
   /** Когда упакована, мс с 1970 года (новее — важнее). */
   updatedAt: number;
+  /** Предельное питание по паспорту, В (у заводских; без модели — по нему судят о перегрузке). */
+  absMax?: number;
 }
 
 /** Режим мультиметра: вольтметр, миллиамперметр, амперметр, омметр. */

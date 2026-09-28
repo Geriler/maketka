@@ -103,7 +103,7 @@ export function packageRecipe(level: Level, id: string, chipFor: (func: LogicFun
 export function referenceChips(): ChipDef[] {
   const out = new Map<string, ChipDef>();
   const chipFor = (func: LogicFunc) => out.get(`ref:${func}-cmos`) ?? out.get(`ref:${LEVELS.find((l) => l.func === func)!.id}`)!;
-  for (const level of LEVELS) out.set(`ref:${level.id}`, packageRecipe(level, `ref:${level.id}`, chipFor));
+  for (const level of LEVELS) out.set(`ref:${level.id}`, { ...packageRecipe(level, `ref:${level.id}`, chipFor), absMax: level.absMax ?? REF_ABS_MAX });
   return [...out.values()];
 }
 
@@ -741,6 +741,64 @@ function opampSteps(def: ChipDef, level: Level, chips: Record<string, ChipDef>):
   return out;
 }
 
+/** Стабилизатор при входе vin и токе нагрузки iout (нагрузка — резистор vnom/iout): выход, ток покоя. */
+export function regRun(def: ChipDef, level: Level, chips: Record<string, ChipDef>, vin: number, iout: number) {
+  const free = { mode: "free" as const, x: 0, z: 0, rot: 0 };
+  const u: Chip = { id: "U1", type: "chip", def: def.id, name: def.name, package: def.package, pins: def.pins, placement: free };
+  const pin = (p: number): Endpoint => ({ comp: "U1", pin: p - 1 });
+  const plus: Endpoint = { comp: "G1", pin: 1 };
+  const minus: Endpoint = { comp: "G1", pin: 0 };
+  const io = gateIo(level);
+  const out = io.outputs[0];
+  const components: Component[] = [{ id: "G1", type: "psu", volts: vin, amps: 1, on: true, placement: free }, u];
+  const links: [Endpoint, Endpoint][] = [[plus, pin(io.vcc)], ...level.roles.flatMap((r, i): [Endpoint, Endpoint][] => (r === "gnd" ? [[minus, pin(i + 1)]] : []))];
+  if (iout > 0) {
+    components.push({ id: "RL", type: "resistor", variant: "tht", ohms: level.reg!.vnom / iout, smdSize: "0805", placement: free });
+    links.push([pin(out), { comp: "RL", pin: 0 }], [{ comp: "RL", pin: 1 }, minus]);
+  }
+  const scene: Scene = { components, wires: links.map(([a, b], i) => ({ id: `W${i}`, a, b, color: "" })), boards: [], chips: { ...chips, [def.id]: def } };
+  const sim = new Simulation(scene, undefined, { expand: ["U1"], strictModels: true });
+  sim.solve();
+  const burnt = new Set<string>();
+  for (let t = 0; t < 0.05; t += 0.01) for (const b of sim.step(0.01)) if (b.id.startsWith("U1/")) burnt.add(b.id.slice(3));
+  for (const p of sim.parts) {
+    const limit = heatThreshold(p);
+    if (p.id.startsWith("U1/") && limit && sim.overload(p) > limit) burnt.add(p.id.slice(3));
+  }
+  const gnd = sim.solution.voltage.get(pinNode(u, io.gnd - 1)) ?? 0;
+  const vout = (sim.solution.voltage.get(pinNode(u, out - 1)) ?? 0) - gnd;
+  const iin = Math.abs(sim.current(scene.components[0]));
+  const iload = iout > 0 ? Math.abs(sim.current(scene.components.find((c) => c.id === "RL")!)) : 0;
+  return { vout, iq: iin - iload, burnt: [...burnt] };
+}
+
+/** Проверка стабилизатора по его reg: выход во всех углах, нестабильность по входу и нагрузке, ток покоя. */
+function regulatorSteps(def: ChipDef, level: Level, chips: Record<string, ChipDef>): { text: string; ok: boolean }[] {
+  const g = level.reg!;
+  const [v0, v1] = g.vin;
+  const [i0, i1] = g.iout;
+  const vmid = Math.min(10, v1);
+  const run = (vin: number, iout: number) => regRun(def, level, chips, vin, iout);
+  const corners = [[v0, i0], [v0, i1], [v1, i0], [v1, i1], [vmid, i1]].map(([vin, iout]) => ({ vin, iout, r: run(vin, iout) }));
+  const burnt = new Set(corners.flatMap((c) => c.r.burnt));
+  const at = (vin: number, iout: number) => corners.find((c) => c.vin === vin && c.iout === iout)!.r;
+  const v = (x: number) => formatSI(x, "В");
+  const ma = (x: number) => formatSI(x, "А");
+  const bad = corners.find((c) => c.r.vout < g.vout[0] || c.r.vout > g.vout[1]);
+  const line = Math.abs(at(v1, i1).vout - at(v0, i1).vout);
+  const load = Math.abs(at(vmid, i1).vout - run(vmid, i0).vout);
+  const iq = run(vmid, i0).iq;
+  const typ = at(vmid, i1).vout;
+  return [
+    ...(g.vtyp ? [{ text: `При ${v(vmid)} и ${ma(i1)} выход ${v(g.vtyp[0])}…${v(g.vtyp[1])} — сейчас ${v(typ)}`, ok: typ >= g.vtyp[0] && typ <= g.vtyp[1] }] : []),
+    { text: `Выход ${v(g.vout[0])}…${v(g.vout[1])} при входе ${v(v0)}–${v(v1)} и нагрузке ${ma(i0)}–${ma(i1)}: ${corners.map((c) => `${v(c.vin)}, ${ma(c.iout)} → ${v(c.r.vout)}`).join("; ")}${bad ? " — не в пределах" : ""}`, ok: !bad },
+    { text: `Вход ${v(v0)} → ${v(v1)} (нагрузка ${ma(i1)}): выход меняется не больше чем на ${formatSI(g.line, "В")} — сейчас ${formatSI(line, "В")}`, ok: line <= g.line },
+    { text: `Нагрузка ${ma(i0)} → ${ma(i1)} (вход ${v(vmid)}): выход меняется не больше чем на ${formatSI(g.load, "В")} — сейчас ${formatSI(load, "В")}`, ok: load <= g.load },
+    { text: `Ток покоя при ${v(vmid)} не больше ${ma(g.iq)} — сейчас ${ma(iq)}`, ok: iq <= g.iq },
+    { text: burnt.size ? `Ничего не сгорело — а сейчас: ${[...burnt].join(", ")}` : "Ничего не сгорело", ok: !burnt.size },
+  ];
+}
+
 /** Генератор на 555 по даташиту: RA, RB, C и ожидаемые период и доля единицы. */
 export const ASTABLE = { ra: 10_000, rb: 47_000, uF: 1, period: 0.693 * (10_000 + 2 * 47_000) * 1e-6, duty: (10_000 + 47_000) / (10_000 + 2 * 47_000) };
 
@@ -818,10 +876,12 @@ export function checkLevel(level: Level, scene: Scene, chips: Record<string, Chi
   if (problems.length) return { ok: false, problems, rows: [] };
   const def = packageChip(scene, level.part, id);
   def.scene.chips = { ...chipsUsed(scene), ...(scene.chips ?? {}) };
-  if (level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "opamp") {
+  // Предел питания по паспорту — у собранной аналоговой микросхемы (у логики он в её модели)
+  if (level.absMax) def.absMax = level.absMax;
+  if (level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "opamp" || level.check === "regulator") {
     const all = { ...chips, ...def.scene.chips };
     const steps =
-      level.check === "osc" ? oscSteps(def, level, all) : level.check === "bounce" ? bounceSteps(def, level, all) : level.check === "opamp" ? opampSteps(def, level, all) : compareSteps(def, level, all);
+      level.check === "osc" ? oscSteps(def, level, all) : level.check === "bounce" ? bounceSteps(def, level, all) : level.check === "opamp" ? opampSteps(def, level, all) : level.check === "regulator" ? regulatorSteps(def, level, all) : compareSteps(def, level, all);
     const ok = steps.every((x) => x.ok);
     return ok
       ? { ok, problems: [], rows: [], steps, def, metrics: measure(scene, [], def, all) }
@@ -970,7 +1030,7 @@ export function characterize(def: ChipDef, scene: Scene): ChipModel | undefined 
   // Генератор моделью не описать: у него нет таблицы — считается целиком
   // Генератор и подавитель дребезга живут временем (RC) — модель без времени их не заменит
   // Компараторы и таймер сравнивают напряжения, а не логические уровни: только по транзисторам
-  if (!level || def.pins !== level.roles.length || level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "timer" || level.check === "opamp") return undefined;
+  if (!level || def.pins !== level.roles.length || level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "timer" || level.check === "opamp" || level.check === "regulator") return undefined;
   const key = `${def.id}@${def.updatedAt}`;
   const known = models.get(key);
   if (known !== undefined) return known ?? undefined;

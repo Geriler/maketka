@@ -1,6 +1,6 @@
 import * as THREE from "three";
 import { axialLayout, type ComponentView, disposeGroup, mm, tagPickable } from "../view/kit";
-import { DIODES, diodeSpec, type Diode, type DiodeKind } from "../model/types";
+import { DIODES, diodeSpec, zenerSpec, type Diode, type DiodeKind } from "../model/types";
 import { formatSI } from "../sim/resistorCodes";
 import { VT, diodeParams, formatLimit } from "../sim/devices";
 import { junctionSim } from "./junction";
@@ -9,6 +9,9 @@ import { actualRow, diodeSelect, pill, polarNote, twoPinHint } from "../view/pan
 
 /** Анод (вывод 0) сверху: треугольник остриём к катоду. Общее для диода и светодиода. */
 export const DIODE_SYMBOL = `<path d="M0 -20V-8M0 8V20M-9 8H9"/><path d="M-9 -8H9L0 8Z"/>`;
+
+/** Стабилитрон по ГОСТ: как диод, но у черты катода загнутый конец. */
+const ZENER_SYMBOL = `<path d="M0 -20V-8M0 8V20M-9 8H9V4"/><path d="M-9 -8H9L0 8Z"/>`;
 
 /** Плашка диода и светодиода, включённых наоборот. */
 export const REVERSED_PILL = pill("warn", "ОБРАТНОЕ ВКЛЮЧЕНИЕ — ТОК НЕ ИДЁТ");
@@ -26,7 +29,7 @@ export const diode: PartDef<Diode> = {
       group: "semi",
       icon: `<path d="M1 9h10M19 9h10M11 4l8 5-8 5zM19 4v10" />`,
       label: "Диод",
-      title: "Диод 1N4148 / 1N4007 / 1N5408",
+      title: "Диод 1N4148 / 1N4007 / 1N5408 или стабилитрон BZX55",
       settings: { kind: "1N4007" as DiodeKind },
       name: (s) => `Диод ${DIODES[s.kind].label}`,
       note: () => `<p class="sub">Пропускает ток в одну сторону.</p>${polarNote("anode")}`,
@@ -41,18 +44,30 @@ export const diode: PartDef<Diode> = {
   polar: () => true,
   label: (c) => diodeSpec(c).label,
   value: (c) => diodeSpec(c).label,
-  symbol: () => DIODE_SYMBOL,
-  burn: (c) => [`Диод ${c.id} сгорел`, `Ток больше ${formatSI(diodeSpec(c).maxA, "А")}. Ограничьте ток резистором или возьмите диод мощнее.`],
+  symbol: (c) => (zenerSpec(c) ? ZENER_SYMBOL : DIODE_SYMBOL),
+  burn: (c) =>
+    zenerSpec(c)
+      ? [`Стабилитрон ${c.id} сгорел`, `Мощность больше ${formatSI(zenerSpec(c)!.ptot, "Вт")} (или прямой ток больше ${formatSI(diodeSpec(c).maxA, "А")}). Ток стабилитрона ограничивают резистором.`]
+      : [`Диод ${c.id} сгорел`, `Ток больше ${formatSI(diodeSpec(c).maxA, "А")}. Ограничьте ток резистором или возьмите диод мощнее.`],
 
   ...junctionSim,
   load(c, sim) {
     const maxA = diodeSpec(c).maxA;
-    return { ratio: Math.max(0, sim.current(c)) / maxA, what: "ток", limit: formatLimit(maxA, "А") };
+    const byI = { ratio: Math.max(0, sim.current(c)) / maxA, what: "ток" as const, limit: formatLimit(maxA, "А") };
+    const z = zenerSpec(c);
+    if (!z) return byI;
+    // Стабилитрон в пробое греется мощностью: по даташиту Ptot 0,5 Вт
+    const byP = { ratio: Math.abs(sim.voltage(c) * sim.current(c)) / z.ptot, what: "мощность" as const, limit: formatLimit(z.ptot, "Вт") };
+    return byP.ratio > byI.ratio ? byP : byI;
   },
+  // Стабилитрон включают наоборот нарочно — это не ошибка
+  reversed: (c, sim) => !zenerSpec(c) && sim.voltage(c) < -0.5,
   thermal: { threshold: 1, rate: 0.6, cooling: 0.5 },
   panel: (c) => ({
     title: `Диод ${diodeSpec(c).label}`,
-    body: `<p class="sub">Пропускает ток только от анода к катоду, падение ≈ 0,6–0,9 В. Кольцо на корпусе — катод. До ${formatSI(diodeSpec(c).maxA, "А")}.</p>`,
+    body: zenerSpec(c)
+      ? `<p class="sub">Стабилитрон: в прямую сторону — как обычный диод, а в обратную (катод к плюсу) не пропускает ток, пока напряжение не дойдёт до напряжения стабилизации; дальше ток растёт, а напряжение почти не меняется. По даташиту Vishay BZX55: ${formatSI(zenerSpec(c)!.vz[0], "В")}…${formatSI(zenerSpec(c)!.vz[2], "В")} при 5 мА, не больше ${formatSI(zenerSpec(c)!.ptot, "Вт")}. Кольцо на корпусе — катод.</p>`
+      : `<p class="sub">Пропускает ток только от анода к катоду, падение ≈ 0,6–0,9 В. Кольцо на корпусе — катод. До ${formatSI(diodeSpec(c).maxA, "А")}.</p>`,
     editor: diodeSelect(c.kind ?? "1N4007"),
   }),
   edit(c, field, value) {
@@ -61,6 +76,7 @@ export const diode: PartDef<Diode> = {
   reversedPill: REVERSED_PILL,
   actual(c, tol) {
     const p = diodeParams(c, tol);
+    if (p.bv !== undefined) return actualRow("Напряжение стабилизации при 5 мА", formatSI(p.bv + p.ibv! * p.rs, "В"));
     return actualRow("Прямое напряжение при 10 мА", formatSI(p.n * VT * Math.log(0.01 / p.is), "В"));
   },
   view: diodeView,

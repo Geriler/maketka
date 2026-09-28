@@ -184,7 +184,8 @@ export const chip: PartDef<Chip> = {
   // Перегрузка: самый нагруженный выход модели (предел как у логики 74-й серии) и питание сверх предельного
   load(c, sim) {
     const model = sim.modelOf(c.id);
-    const absMax = model?.absMax ?? (c.def.startsWith("ref:") ? REF_ABS_MAX : undefined);
+    // Предел питания: из модели, иначе из описания заводской микросхемы (у аналоговых модели нет)
+    const absMax = model?.absMax ?? resolveChip(sim.scene, c.def)?.absMax ?? (c.def.startsWith("ref:") ? REF_ABS_MAX : undefined);
     let worst = 0;
     model?.outputs.forEach((_, k) => {
       for (const key of [`${c.id}:h${k}`, `${c.id}:l${k}`]) worst = Math.max(worst, Math.abs(sim.branch(key).current));

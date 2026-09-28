@@ -3,7 +3,7 @@
  * диода MOSFET: уравнение Шокли, его линеаризация для решателя и приёмы сходимости Ньютона.
  */
 
-import { LED_N, diodeSpec, ledSpec, type Component } from "../model/types";
+import { LED_N, ZENER_TEST_A, diodeSpec, ledSpec, zenerSpec, type Component } from "../model/types";
 import * as tolerance from "./tolerance";
 import { NO_TOLERANCE, type Tolerance } from "./tolerance";
 
@@ -14,6 +14,13 @@ export interface DiodeParams {
   is: number;
   n: number;
   rs: number;
+  /**
+   * Обратный пробой (стабилитрон): при напряжении перехода −bv течёт обратный ток ibv, дальше
+   * он растёт экспоненциально с крутизной nbv·VT: I = −ibv·exp((−v − bv)/(nbv·VT)).
+   */
+  bv?: number;
+  ibv?: number;
+  nbv?: number;
 }
 
 /** «0,125 Вт», «20 мА», «6,3 В» — предел для подписи в панели. */
@@ -26,7 +33,11 @@ export function formatLimit(v: number, unit: string): string {
 export function diodeParams(c: Component, tol: Tolerance = NO_TOLERANCE): DiodeParams {
   if (c.type === "diode") {
     const d = diodeSpec(c);
-    return { is: tolerance.diodeIs(c, tol), n: d.n, rs: d.rs };
+    const z = zenerSpec(c);
+    if (!z) return { is: tolerance.diodeIs(c, tol), n: d.n, rs: d.rs };
+    // Пробой подобран так, чтобы при 5 мА на выводах было Vz, а наклон был Zz (с учётом Rs)
+    const vz = tolerance.zenerVz(c, tol);
+    return { is: tolerance.diodeIs(c, tol), n: d.n, rs: d.rs, bv: vz - ZENER_TEST_A * d.rs, ibv: ZENER_TEST_A, nbv: ((z.zz - d.rs) * ZENER_TEST_A) / VT };
   }
   if (c.type === "led") {
     // Is подбирается так, чтобы при номинальном токе на выводах было vf (с учётом падения на Rs).
@@ -37,9 +48,15 @@ export function diodeParams(c: Component, tol: Tolerance = NO_TOLERANCE): DiodeP
   throw new Error(`${c.id} — не диод`);
 }
 
-/** Ток через p-n переход при напряжении vj, А. */
+/** Ток через p-n переход при напряжении vj, А (с обратным пробоем, если он задан). */
 export function shockley(p: DiodeParams, vj: number): number {
-  return p.is * (Math.exp(vj / (p.n * VT)) - 1);
+  return p.is * (Math.exp(vj / (p.n * VT)) - 1) - breakdown(p, vj);
+}
+
+/** Обратный ток пробоя при напряжении перехода vj, А (положительный — от катода к аноду). */
+function breakdown(p: DiodeParams, vj: number): number {
+  if (p.bv === undefined) return 0;
+  return p.ibv! * Math.exp(Math.min((-vj - p.bv) / (p.nbv! * VT), 80));
 }
 
 /**
@@ -47,6 +64,17 @@ export function shockley(p: DiodeParams, vj: number): number {
  * без него экспонента переполняется при первом же большом шаге.
  */
 export function limitJunction(vnew: number, vold: number, p: DiodeParams): number {
+  // Пробой: то же ограничение, но для w = −v − bv (экспонента растёт в обратную сторону)
+  if (p.bv !== undefined && vnew < 0) {
+    const nvt = p.nbv! * VT;
+    const wnew = -vnew - p.bv, wold = -vold - p.bv;
+    const wcrit = nvt * Math.log(nvt / (Math.SQRT2 * p.ibv!));
+    if (wnew > wcrit && Math.abs(wnew - wold) > 2 * nvt) {
+      const w = wold > 0 ? (1 + (wnew - wold) / nvt > 0 ? wold + nvt * Math.log(1 + (wnew - wold) / nvt) : wcrit) : nvt * Math.log(Math.max(wnew / nvt, 1e-12));
+      return -w - p.bv;
+    }
+    return vnew;
+  }
   const nvt = p.n * VT;
   const vcrit = nvt * Math.log(nvt / (Math.SQRT2 * p.is));
   if (vnew > vcrit && Math.abs(vnew - vold) > 2 * nvt) {
@@ -79,7 +107,7 @@ export function damp(vnew: number, vold: number, iter: number): number {
  */
 export function junctionSettled(p: DiodeParams, vold: number, vnew: number, target: number): boolean {
   if (Math.abs(vnew - vold) <= 1e-7) return true;
-  const i = (v: number) => p.is * (Math.exp(Math.min(v, 5) / (p.n * VT)) - 1);
+  const i = (v: number) => p.is * (Math.exp(Math.min(v, 5) / (p.n * VT)) - 1) - breakdown(p, v);
   const io = i(vold);
   const inew = i(target);
   return Math.abs(inew - io) <= 1e-9 + 1e-6 * Math.max(Math.abs(io), Math.abs(inew));
@@ -97,7 +125,9 @@ export function diodeBranch(p: DiodeParams, vj: number): { r: number; emf: numbe
   // Ток утечки GMIN·vj входит и в ток, и в наклон: касательная к I(v) = Is·(e^v/nVt − 1) + GMIN·v.
   // Если учесть GMIN только в наклоне, узел, который держится на одном запертом диоде
   // (светодиод последовательно с разомкнутым тумблером), уходит на итерациях вразнос.
-  const id = p.is * (e - 1) + GMIN * vj;
-  const gd = (p.is / (p.n * VT)) * e + GMIN;
+  // Пробой стабилитрона: ток −ibv·e^((−v−bv)/nbv·VT) и его наклон в ту же касательную
+  const br = breakdown(p, vj);
+  const id = p.is * (e - 1) + GMIN * vj - br;
+  const gd = (p.is / (p.n * VT)) * e + GMIN + (p.bv !== undefined ? br / (p.nbv! * VT) : 0);
   return { r: 1 / gd + p.rs, emf: id / gd - vj };
 }
