@@ -253,7 +253,7 @@ export function seatOf(holeId: string): { board: BoardSpec; seat: Seat } | undef
 }
 
 /** Назначение вывода корпуса; nc — не подключён. */
-export type ChipPinRole = "nc" | "in" | "out" | "vcc" | "gnd";
+export type ChipPinRole = "nc" | "in" | "out" | "io" | "vcc" | "gnd";
 
 /** Вид корпуса: DIP (выводы в два ряда) или SOT-23-5/6, SOT-143 — крошечные, на переходнике с шагом 2,54 мм. */
 export type ChipPackage = "DIP" | "SOT-23-5" | "SOT-23-6" | "SOT-143";
@@ -624,7 +624,7 @@ export function chipPinName(b: BoardSpec | undefined, i: number): string {
   return role === "nc" ? "NC" : b?.names?.[i]?.trim() || ROLE_NAMES[role];
 }
 
-const ROLE_NAMES: Record<ChipPinRole, string> = { nc: "NC", in: "IN", out: "OUT", vcc: "VCC", gnd: "GND" };
+const ROLE_NAMES: Record<ChipPinRole, string> = { nc: "NC", in: "IN", out: "OUT", io: "I/O", vcc: "VCC", gnd: "GND" };
 
 /**
  * Площадки печатной платы, через которые проходит отрезок от a до b (включая концы), по порядку.

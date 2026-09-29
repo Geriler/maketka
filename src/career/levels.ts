@@ -11,7 +11,7 @@ import type { ChipPackage, ChipPinRole } from "../model/breadboard";
 import type { DiodeKind, MosfetKind, TransistorKind } from "../model/types";
 
 /** Логическая функция компонента. */
-export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173";
+export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173" | "bus245";
 
 /** Деталь набора: сколько штук и что именно (тип и номинал). */
 export type KitItem =
@@ -132,6 +132,9 @@ export function zOutputs(func: LogicFunc, bits: boolean[]): boolean[] | undefine
   if (func === "reg8z") return Array(8).fill(bits[1]);
   // 74HC173: отключены все четыре, если хоть один из OE̅1, OE̅2 в единице
   if (func === "reg173") return Array(4).fill(bits[4] || bits[5]);
+  // 74HC245 (OE̅, DIR, A0…A7, B0…B7): выходы A — при DIR = 0, выходы B — при DIR = 1; OE̅ = 1 — все
+  // отключены. Отключённый вывод шины — вход (Nexperia 74HC245, таблица 3)
+  if (func === "bus245") return [...Array(8).fill(bits[0] || bits[1]), ...Array(8).fill(bits[0] || !bits[1])];
   return undefined;
 }
 
@@ -372,6 +375,9 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
     // 74HC157 (E̅, S, 1I0, 1I1, 2I0, 2I1…): при E̅ = 1 все выходы — ноль, иначе S выбирает I0 или I1
     case "mux4q":
       return [0, 1, 2, 3].map((k) => !a && (b ? bits[3 + 2 * k] : bits[2 + 2 * k]));
+    // 74HC245: на выводы A — то, что пришло на B, на выводы B — с A (какие из них ведут — см. zOutputs)
+    case "bus245":
+      return [...bits.slice(10, 18), ...bits.slice(2, 10)];
     // 74HC244 (1OE̅, 1A0…1A3, 2OE̅, 2A0…2A3): две четвёрки буферов
     case "buf8z":
       return [...bits.slice(1, 5), ...bits.slice(6, 10)];
@@ -2623,6 +2629,45 @@ export const LEVELS: Level[] = [
       ],
     },
   },
+  {
+    id: "hc245",
+    func: "bus245",
+    part: "74HC245",
+    title: "Двунаправленный буфер шины",
+    about:
+      "Настоящая микросхема: восемь линий, соединяющих две шины, A и B, — в любую сторону. DIR = 1: то, что на A0…A7, выдаётся на B0…B7; DIR = 0 — наоборот, с B на A. Те выводы, с которых данные берутся, в этот момент — входы: микросхема их не тянет. OE̅ = 1 — отключены обе стороны. Так к общей шине процессора подключают то, что и читает, и пишет, — например, память. Выводы — как у 74HC245 (Nexperia, ред. 9): 1 DIR, 2–9 A0…A7, 10 GND, 11–18 B7…B0, 19 OE̅, 20 VCC. Проверяется 40 наборами: на вывод, который должен быть входом, проверка подаёт уровень и следит, чтобы микросхема его не перебивала.",
+    hints: [
+      "Один буфер передаёт только в одну сторону. Сколько нужно, чтобы передавать в обе, — и что должно быть с тем, который сейчас не нужен?",
+      "Каждой стороне своё разрешение, и оба зависят от OE̅ и DIR. Когда должна молчать сторона A→B, когда B→A?",
+    ],
+    package: "DIP",
+    roles: ["in", "io", "io", "io", "io", "io", "io", "io", "io", "gnd", "io", "io", "io", "io", "io", "io", "io", "io", "in", "vcc"],
+    names: ["DIR", "A0", "A1", "A2", "A3", "A4", "A5", "A6", "A7", "", "B7", "B6", "B5", "B4", "B3", "B2", "B1", "B0", "OE̅", ""],
+    io: { inputs: [19, 1, 2, 3, 4, 5, 6, 7, 8, 9, 18, 17, 16, 15, 14, 13, 12, 11], outputs: [2, 3, 4, 5, 6, 7, 8, 9, 18, 17, 16, 15, 14, 13, 12, 11] },
+    room: 1400,
+    kit: [
+      { part: "chip", func: "buf8z", count: 2 },
+      { part: "chip", func: "or", count: 2 },
+      { part: "chip", func: "not", count: 1 },
+    ],
+    recipe: {
+      parts: [ic("AB", "buf8z", 20, "D", 2), ic("BA", "buf8z", 20, "D", 14), sot("O1", "or", "H", 2), sot("O2", "or", "H", 6), sot("N", "not", "H", 10)],
+      nets: [
+        ...power("P20", "P10", [{ id: "AB", vcc: 20, gnd: 10 }, { id: "BA", vcc: 20, gnd: 10 }, ...gates("O1", "O2", "N")]),
+        // A→B молчит, если OE̅ = 1 или DIR = 0; B→A — если OE̅ = 1 или DIR = 1
+        ["P1", "N.2", "O2.2"],
+        ["P19", "O1.1", "O2.1"],
+        ["N.4", "O1.2"],
+        ["O1.4", "AB.1", "AB.19"],
+        ["O2.4", "BA.1", "BA.19"],
+        // Канал j у 74HC244: вход и выход; линия j: A — вывод 2 + j, B — вывод 18 − j
+        ...[[2, 18], [4, 16], [6, 14], [8, 12], [17, 3], [15, 5], [13, 7], [11, 9]].flatMap(([a, y], j) => [
+          [`P${2 + j}`, `AB.${a}`, `BA.${y}`],
+          [`P${18 - j}`, `AB.${y}`, `BA.${a}`],
+        ]),
+      ],
+    },
+  },
   // ─── Числа: разряд компаратора → 74HC85; 74HC595; проект АЛУ ─────────────────────────────
   {
     id: "mag1",
@@ -2883,6 +2928,7 @@ export const FUNC_NAMES: Record<LogicFunc, string> = {
   cnt1: "Разряд синхронного счётчика",
   cnt161: "Синхронный счётчик 4 бит",
   reg173: "Регистр 4 бит с тремя состояниями",
+  bus245: "Двунаправленный буфер шины",
   timer: "Таймер 555",
   mag1: "Разряд компаратора",
   mag4: "Компаратор чисел 4 бит",

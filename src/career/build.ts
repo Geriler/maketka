@@ -246,6 +246,13 @@ export function measure(scene: Scene, rows: CheckRow[], def: ChipDef, chips: Rec
  */
 export const loadOhms = (level: Level) => (level.drive ? (0.7 * CHECK_VOLTS) / level.drive : 100_000);
 
+/**
+ * Двунаправленный вывод (он и во входах, и в выходах уровня), когда по таблице работает входом,
+ * проверка подаёт на него уровень через такой резистор, Ом: если микросхема сама тянет его в
+ * другую сторону, уровень на выводе испортится — это провал, как у настоящей шины.
+ */
+export const BUS_DRIVE = 100;
+
 /** Подтяжка выходов с открытым коллектором на проверке, Ом. */
 export const PULL_UP = 10_000;
 
@@ -300,18 +307,33 @@ export function truthTable(def: ChipDef, level: Level, chips: Record<string, Chi
   const loads = io.outputs.map((_, k) => `RL${k + 1}`);
   // Открытый коллектор: единицу даёт резистор 10 кОм к питанию, как на плате
   const pulls = (level.openDrain ?? []).map((p, k) => ({ p, id: `RP${k + 1}` }));
-  /** Провода стенда: входы inputs; нагрузка выхода k — к питанию, если up[k], иначе к общему. */
-  const wiring = (inputs: boolean[], up: boolean[]) =>
+  // Двунаправленные выводы: номер того же вывода среди входов (−1 — обычный выход) и резистор, через который его подают
+  const both = io.outputs.map((p) => io.inputs.indexOf(p));
+  const drive = (k: number) => `RD${k + 1}`;
+  /**
+   * Провода стенда: входы inputs; нагрузка выхода k — к питанию, если up[k], иначе к общему.
+   * asInput[k] — двунаправленный вывод k сейчас вход: подан через BUS_DRIVE, без нагрузки. Провод
+   * каждого входа — на своём месте (по нему считается ток входа), у двунаправленного — к резистору.
+   */
+  const wiring = (inputs: boolean[], up: boolean[], asInput: boolean[] = io.outputs.map(() => false)) =>
     (
       [
         [plus, pin(io.vcc)],
         [minus, pin(io.gnd)],
         ...pulls.flatMap(({ p, id }): [Endpoint, Endpoint][] => [[pin(p), { comp: id, pin: 0 }], [{ comp: id, pin: 1 }, plus]]),
-        ...io.inputs.map((p, i): [Endpoint, Endpoint] => [pin(p), inputs[i] ? plus : minus]),
-        ...io.outputs.flatMap((p, k): [Endpoint, Endpoint][] => [
-          [pin(p), { comp: loads[k], pin: 0 }],
-          [{ comp: loads[k], pin: 1 }, up[k] ? plus : minus],
-        ]),
+        ...io.inputs.map((p, i): [Endpoint, Endpoint] => {
+          const k = io.outputs.indexOf(p);
+          return [pin(p), k >= 0 ? { comp: drive(k), pin: 0 } : inputs[i] ? plus : minus];
+        }),
+        ...io.outputs.flatMap((p, k): [Endpoint, Endpoint][] =>
+          asInput[k]
+            ? []
+            : [
+                [pin(p), { comp: loads[k], pin: 0 }],
+                [{ comp: loads[k], pin: 1 }, up[k] ? plus : minus],
+              ],
+        ),
+        ...io.outputs.flatMap((_, k): [Endpoint, Endpoint][] => (asInput[k] ? [[{ comp: drive(k), pin: 1 }, inputs[both[k]] ? plus : minus]] : [])),
       ] as [Endpoint, Endpoint][]
     ).map(([a, b], i) => ({ id: `W${i}`, a, b, color: "" }));
   const scene: Scene = {
@@ -320,6 +342,7 @@ export function truthTable(def: ChipDef, level: Level, chips: Record<string, Chi
       u,
       ...loads.map((id): Component => ({ id, type: "resistor", variant: "tht", ohms: load, smdSize: "0805", placement: { mode: "free", x: 0, z: 0, rot: 0 } })),
       ...pulls.map(({ id }): Component => ({ id, type: "resistor", variant: "tht", ohms: PULL_UP, smdSize: "0805", placement: { mode: "free", x: 0, z: 0, rot: 0 } })),
+      ...both.flatMap((i, k): Component[] => (i >= 0 ? [{ id: drive(k), type: "resistor", variant: "tht", ohms: BUS_DRIVE, smdSize: "0805", placement: { mode: "free", x: 0, z: 0, rot: 0 } }] : [])),
     ],
     wires: wiring(Array(n).fill(false), io.outputs.map(() => false)),
     boards: [],
@@ -330,8 +353,8 @@ export function truthTable(def: ChipDef, level: Level, chips: Record<string, Chi
   // Проверяемая микросхема — до транзисторов; микросхемы внутри неё, уже проверенные, — моделью
   const sim = new Simulation(scene, undefined, { expand: ["U1"], strictModels: true });
   /** Один прогон: переключить стенд и дать схеме установиться. */
-  const run = (inputs: boolean[], up: boolean[]) => {
-    scene.wires = wiring(inputs, up);
+  const run = (inputs: boolean[], up: boolean[], asInput?: boolean[]) => {
+    scene.wires = wiring(inputs, up, asInput);
     sim.solve();
     const burnt = new Set<string>();
     for (const c of sim.step(0.01)) if (c.id.startsWith("U1/")) burnt.add(c.id.slice(3));
@@ -365,11 +388,14 @@ export function truthTable(def: ChipDef, level: Level, chips: Record<string, Chi
       sequenceExpected(level, q0, i).forEach((e, j) => (steps[i + j].expected = e));
     }
     const { inputs, prep } = step;
-    // Отключённый выход: в первом прогоне нагрузка к питанию — он должен быть единицей, во втором к общему — нулём
-    const z = zOutputs(level.func, inputs);
-    const expected = step.expected.map((e, k) => (z?.[k] ? false : e));
+    // Отключённый выход: в первом прогоне нагрузка к питанию — он должен быть единицей, во втором к общему — нулём.
+    // Отключённый двунаправленный — это вход: на нём должен остаться поданный уровень
+    const zAll = zOutputs(level.func, inputs);
+    const asInput = io.outputs.map((_, k) => both[k] >= 0 && !!zAll?.[k]);
+    const z = zAll?.map((zk, k) => zk && both[k] < 0);
+    const expected = step.expected.map((e, k) => (asInput[k] ? inputs[both[k]] : z?.[k] ? false : e));
     const good = (k: number, v: number) => (expected[k] || z?.[k] ? isHigh(v, volts) : isLow(v, volts));
-    const first = run(inputs, expected.map((e) => !e));
+    const first = run(inputs, expected.map((e) => !e), asInput);
     if (prep) {
       lastPrep = first.volts;
       continue;
@@ -378,13 +404,13 @@ export function truthTable(def: ChipDef, level: Level, chips: Record<string, Chi
     const burnt = new Set(first.burnt);
     let floating = expected.map(() => false);
     if (z?.some(Boolean)) {
-      const second = run(inputs, expected);
+      const second = run(inputs, expected, asInput);
       second.burnt.forEach((c) => burnt.add(c));
       z.forEach((zk, k) => zk && (each[k] = each[k] && isLow(second.volts[k], volts)));
     }
     // Неверный выход: он неправ сам или просто идёт за нагрузкой? Нагрузка в другую сторону покажет
     if (!each.every(Boolean)) {
-      const second = run(inputs, expected);
+      const second = run(inputs, expected, asInput);
       second.burnt.forEach((c) => burnt.add(c));
       floating = expected.map((_, k) => !each[k] && good(k, second.volts[k]));
     }
@@ -398,7 +424,8 @@ export function truthTable(def: ChipDef, level: Level, chips: Record<string, Chi
       burned: [...burnt],
       floating,
       each,
-      ...(z ? { z } : {}),
+      // Для модели: где выход не вёл сам (отключён или работал входом) — не мерка его сопротивления
+      ...(zAll ? { z: zAll } : {}),
       ok: !burnt.size && each.every(Boolean),
     });
   }
