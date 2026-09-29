@@ -87,7 +87,7 @@ export function renderToolButtons(tools: HTMLElement): void {
     body?.insertAdjacentHTML(
       "beforeend",
       `<button class="tool" data-tool="${def.id}" data-part-tool aria-pressed="false" title="${def.title.replace(/"/g, "&quot;")}"${cat ? ` data-chip-cat="${cat}"` : ""}>
-        <svg viewBox="0 0 30 18">${def.icon}</svg>${esc(def.label)}
+        <svg viewBox="0 0 30 18">${def.icon}</svg>${def.sub ? `<span class="tool-name">${esc(def.label)}<small>${esc(def.sub)}</small></span>` : esc(def.label)}
       </button>`,
     );
   }

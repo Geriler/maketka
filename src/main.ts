@@ -106,7 +106,10 @@ async function start(): Promise<void> {
   // Заголовок группы подсвечен и показывает значок выбранного в ней инструмента
   app.onTool = (tool) => {
     const btn = tools.querySelector<HTMLElement>(`[data-tool="${tool}"]`);
-    if (btn) brandTool.textContent = (btn.textContent ?? "").replace(btn.querySelector("kbd")?.textContent ?? "", "").trim();
+    // Только имя: без клавиши и без строки «что делает» под обозначением микросхемы
+    const shown = btn?.cloneNode(true) as HTMLElement | undefined;
+    shown?.querySelectorAll("kbd, small").forEach((x) => x.remove());
+    if (shown) brandTool.textContent = (shown.textContent ?? "").trim();
     for (const g of groups) {
       const chosen = g.querySelector<HTMLElement>(`.group-body [data-tool="${tool}"]`);
       const head = g.querySelector("summary")!;

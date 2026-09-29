@@ -51,6 +51,8 @@ export interface ToolDef<C extends Component = Component, S = any> {
   icon: string;
   /** Подпись кнопки и всплывающая подсказка. */
   label: string;
+  /** Мелкая строка под подписью (у микросхем — что делает). */
+  sub?: string;
   title: string;
   /** Начальные настройки новой детали; меняются полями панели (set). */
   settings: S;

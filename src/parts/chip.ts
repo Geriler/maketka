@@ -10,6 +10,7 @@ import { formatOhms, formatSI } from "../sim/resistorCodes";
 import { type ComponentView, blackPlastic, disposeGroup, freeTransform, lead, mm, tagPickable } from "../view/kit";
 import { kv, pill, selectField } from "../view/panel";
 import { PIN_ROLES } from "../chips/roles";
+import { chipAbout, chipKind } from "../chips/about";
 import { toolFor, type PartDef } from "./types";
 
 /** Подпись вывода корпуса: имя, у неподключённого — NC. */
@@ -21,18 +22,22 @@ export function chipPinName(def: ChipDef, i: number): string {
 /** Инструмент установки микросхемы из библиотеки. */
 export function chipTool(def: ChipDef) {
   const soic = !isSot(def.package) && [4, 6, 8, 14, 16, 18, 20].includes(def.pins);
+  const about = chipAbout(def.id);
+  const kind = chipKind(def.id);
   return toolFor<Chip>()({
     id: `chip:${def.id}`,
     group: "chips",
     icon: `<rect x="7" y="4" width="16" height="10" rx="1" /><path d="M9 4V1M13 4V1M17 4V1M21 4V1M9 14v3M13 14v3M17 14v3M21 14v3" /><circle cx="9.5" cy="11.5" r="1" />`,
     label: def.name,
-    title: `${def.name} — ${packageName(def.package, def.pins)}, ${def.id.startsWith("ref:") ? "заводская" : "собрана вами"}`,
+    ...(kind ? { sub: kind } : {}),
+    title: `${def.name} — ${about ?? `${packageName(def.package, def.pins)}, ${def.id.startsWith("ref:") ? "заводская" : "собрана вами"}`}`,
     settings: { smd: false },
     name: () => def.name,
     note: (s) =>
-      s.smd && soic
+      (about ? `<p>${about}</p>` : "") +
+      (s.smd && soic
         ? `<p class="sub">SO-${def.pins} (SOIC, шаг 1,27 мм) — та же микросхема без ножек, выводы нумеруются как у DIP: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Ставится только на плату под SMD — под ней появятся площадки.</p>`
-        : `<p class="sub">${packageName(def.package, def.pins)}${isSot(def.package) ? " на переходнике" : ""}: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Встаёт поперёк центральной канавки макетки: ${pinLayoutText(def.package, def.pins)}. На плате под SMD ${isSot(def.package) ? "встаёт без переходника, на свои площадки" : "делает себе отверстия где угодно"}.</p>`,
+        : `<p class="sub">${packageName(def.package, def.pins)}${isSot(def.package) ? " на переходнике" : ""}: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Встаёт поперёк центральной канавки макетки: ${pinLayoutText(def.package, def.pins)}. На плате под SMD ${isSot(def.package) ? "встаёт без переходника, на свои площадки" : "делает себе отверстия где угодно"}.</p>`),
     // У DIP есть исполнение в SOIC — выбор корпуса
     editor: (s) => (soic ? selectField("chipBody", "Корпус", [["dip", `DIP-${def.pins} (выводной)`], ["soic", `SO-${def.pins} (SMD, SOIC)`]], s.smd ? "soic" : "dip") : ""),
     set(s, field, value) {
@@ -240,7 +245,7 @@ export const chip: PartDef<Chip> = {
     const k = countChip(def, sim.scene);
     return {
       title: def.name,
-      body: `${kv("Внутри", countShort(k))}
+      body: `${chipAbout(def.id) ? `<p>${chipAbout(def.id)}</p>` : ""}${kv("Внутри", countShort(k))}
         <p class="sub">${countDetails(k)}${k.chips.size ? `. Собрана из своих микросхем: ${countChips(k)}` : ""}.</p>
         ${burned.length ? kv("Сгорело внутри", burned.join(", ")) : ""}
         <div class="eyebrow">выводы (потенциал)</div>${rows}
