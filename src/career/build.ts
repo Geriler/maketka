@@ -366,7 +366,7 @@ export function truthTable(def: ChipDef, level: Level, chips: Record<string, Chi
     }
     const { inputs, prep } = step;
     // Отключённый выход: в первом прогоне нагрузка к питанию — он должен быть единицей, во втором к общему — нулём
-    const z = level.sequence ? undefined : zOutputs(level.func, inputs);
+    const z = zOutputs(level.func, inputs);
     const expected = step.expected.map((e, k) => (z?.[k] ? false : e));
     const good = (k: number, v: number) => (expected[k] || z?.[k] ? isHigh(v, volts) : isLow(v, volts));
     const first = run(inputs, expected.map((e) => !e));

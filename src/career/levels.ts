@@ -11,7 +11,7 @@ import type { ChipPackage, ChipPinRole } from "../model/breadboard";
 import type { DiodeKind, MosfetKind, TransistorKind } from "../model/types";
 
 /** Логическая функция компонента. */
-export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4";
+export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z";
 
 /** Деталь набора: сколько штук и что именно (тип и номинал). */
 export type KitItem =
@@ -128,6 +128,8 @@ export function gateIo(level: Level): { inputs: number[]; outputs: number[]; vcc
 export function zOutputs(func: LogicFunc, bits: boolean[]): boolean[] | undefined {
   if (func === "tbuf") return [bits[0]];
   if (func === "tbuf4") return [bits[0], bits[2], bits[4], bits[6]];
+  if (func === "buf8z") return [...Array(4).fill(bits[0]), ...Array(4).fill(bits[5])];
+  if (func === "reg8z") return Array(8).fill(bits[1]);
   return undefined;
 }
 
@@ -146,7 +148,7 @@ export function goalMet(g: Goal, m: { width: number; height: number; links: numb
 }
 
 /** Схемы с памятью: выход зависит не только от входов, но и от того, что было раньше. */
-export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017"];
+export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017", "reg8z"];
 
 /**
  * Сегменты a…g цифр 0…9 — как у 74HC4511 по таблице TI (SCHS279E): шестёрка без верхней черты,
@@ -214,6 +216,8 @@ export function seqNext(func: LogicFunc, q: number, prev: boolean[] | undefined,
   // 74HC393 (1CLK, 1CLR, 2CLK, 2CLR): два независимых счётчика, второй — в старших четырёх разрядах
   if (func === "cnt393") return count393(q & 15, prev, bits, 0, 1) | (count393(q >> 4, prev, bits, 2, 3) << 4);
   // Счётчик Джонсона (CLK, CLR̅): по фронту A берёт Ē, остальные сдвигаются (A — младший бит)
+  // 74HC574 (CP, OE̅, D0…D7): по фронту CP берёт D (и при отключённых выходах)
+  if (func === "reg8z") return rising(prev, bits, 0) ? prev!.slice(2, 10).reduce((m, b, k) => m | (b ? 1 << k : 0), 0) : q;
   if (func === "johnson") return !bits[1] ? 0 : rising(prev, bits, 0) ? ((q << 1) & 31) | (q & 16 ? 0 : 1) : q;
   // 74HC4017 (CP0, CP1̅, MR): MR = 1 — ноль; счёт по фронту CP0 при CP1̅ = 0 и по спаду CP1̅ при
   // CP0 = 1 — то есть по фронту «CP0 и не CP1̅» (таблица Nexperia 74HC4017, TI SCHS200)
@@ -236,6 +240,7 @@ export function seqOuts(func: LogicFunc, q: number, bits: boolean[]): boolean[] 
   if (func === "dlatch") return [!!q, !q];
   if (func === "cnt4" || func === "sreg4") return [0, 1, 2, 3].map((k) => !!(q & (1 << k)));
   if (func === "sreg8" || func === "cnt393") return [0, 1, 2, 3, 4, 5, 6, 7].map((k) => !!(q & (1 << k)));
+  if (func === "reg8z") return [0, 1, 2, 3, 4, 5, 6, 7].map((k) => !!(q & (1 << k)));
   // Джонсон: A…E, затем Ā…Ē
   if (func === "johnson") return [0, 1, 2, 3, 4].map((k) => !!(q & (1 << k))).concat([0, 1, 2, 3, 4].map((k) => !(q & (1 << k))));
   // 4017: Q0…Q9 — единица у номера счёта; Q5-9̅ — единица при счёте 0…4
@@ -249,6 +254,7 @@ export function seqState(func: LogicFunc, outs: boolean[]): number {
   if (func === "sreg595") return (outs.slice(0, 8).reduce((m, b, k) => m | (b ? 1 << k : 0), 0) << 8) | (outs[8] ? 128 : 0);
   if (func === "bcd7") return Math.max(0, SEGMENTS.indexOf(outs.map((b) => (b ? "1" : "0")).join("")));
   if (func === "johnson") return outs.slice(0, 5).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
+  if (func === "reg8z") return outs.slice(0, 8).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
   if (func === "cnt4017") return Math.max(0, outs.slice(0, 10).indexOf(true));
   return ["cnt4", "sreg4", "sreg8", "cnt393"].includes(func) ? outs.reduce((m, b, k) => m | (b ? 1 << k : 0), 0) : +!!outs[0];
 }
@@ -302,6 +308,7 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
     case "cnt393":
     case "johnson":
     case "cnt4017":
+    case "reg8z":
     case "bcd7":
     case "timer":
     case "sreg595":
@@ -342,6 +349,9 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
     // 74HC125: четыре буфера, входы парами (1OE̅, 1A, 2OE̅, 2A…)
     case "tbuf4":
       return [bits[1], bits[3], bits[5], bits[7]];
+    // 74HC244 (1OE̅, 1A0…1A3, 2OE̅, 2A0…2A3): две четвёрки буферов
+    case "buf8z":
+      return [...bits.slice(1, 5), ...bits.slice(6, 10)];
     // Стабилизаторы: таблицей не проверяются — см. check: regulator
     case "vref":
     case "reg5":
@@ -2327,6 +2337,76 @@ export const LEVELS: Level[] = [
       ],
     },
   },
+  {
+    id: "hc244",
+    func: "buf8z",
+    part: "74HC244",
+    title: "Восемь буферов на шину",
+    about:
+      "Настоящая микросхема в корпусе на 20 выводов: две четвёрки буферов с общим разрешением у каждой (1OE̅ и 2OE̅: 0 — выходы повторяют входы, 1 — отключены). Ставится между чем-то, что выдаёт байт, и шиной. Выводы — как у 74HC244 (Nexperia): 1 1OE̅; 1A0…1A3 — 2, 4, 6, 8, их выходы 1Y0…1Y3 — 18, 16, 14, 12; 2A0…2A3 — 17, 15, 13, 11, выходы 2Y0…2Y3 — 3, 5, 7, 9; 10 GND; 19 2OE̅; 20 VCC. Проверяется 40 наборами.",
+    hints: ["Буферы с тремя состояниями уже есть по четыре в корпусе — сколько их нужно?", "У каждой четвёрки одно разрешение на всех. Сверьте выводы: входы и выходы идут навстречу друг другу."],
+    package: "DIP",
+    roles: ["in", "in", "out", "in", "out", "in", "out", "in", "out", "gnd", "in", "out", "in", "out", "in", "out", "in", "out", "in", "vcc"],
+    names: ["1OE̅", "1A0", "2Y0", "1A1", "2Y1", "1A2", "2Y2", "1A3", "2Y3", "", "2A3", "1Y3", "2A2", "1Y2", "2A1", "1Y1", "2A0", "1Y0", "2OE̅", ""],
+    io: { inputs: [1, 2, 4, 6, 8, 19, 17, 15, 13, 11], outputs: [18, 16, 14, 12, 3, 5, 7, 9] },
+    room: 800,
+    kit: [{ part: "chip", func: "tbuf4", count: 2 }],
+    recipe: {
+      parts: [ic("D1", "tbuf4", 14, "D", 2), ic("D2", "tbuf4", 14, "D", 12)],
+      nets: [
+        ...power("P20", "P10", [{ id: "D1", vcc: 14, gnd: 7 }, { id: "D2", vcc: 14, gnd: 7 }]),
+        ["P1", "D1.1", "D1.4", "D1.10", "D1.13"],
+        ["P2", "D1.2"], ["D1.3", "P18"],
+        ["P4", "D1.5"], ["D1.6", "P16"],
+        ["P6", "D1.9"], ["D1.8", "P14"],
+        ["P8", "D1.12"], ["D1.11", "P12"],
+        ["P19", "D2.1", "D2.4", "D2.10", "D2.13"],
+        ["P17", "D2.2"], ["D2.3", "P3"],
+        ["P15", "D2.5"], ["D2.6", "P5"],
+        ["P13", "D2.9"], ["D2.8", "P7"],
+        ["P11", "D2.12"], ["D2.11", "P9"],
+      ],
+    },
+  },
+  {
+    id: "hc574",
+    func: "reg8z",
+    part: "74HC574",
+    title: "Восьмиразрядный регистр на шину",
+    about:
+      "Настоящая микросхема в корпусе на 20 выводов: восемь D-триггеров с общим тактом — по фронту CP запоминает байт D0…D7. Выходы Q0…Q7 можно отключить (OE̅ = 1) — тогда регистр молчит на шине, но запоминать продолжает. Из таких регистров собирают регистры процессора. Выводы — как у 74HC574 (Nexperia): 1 OE̅, 2–9 D0…D7, 10 GND, 11 CP, 12–19 Q7…Q0, 20 VCC. Проверяется последовательностью шагов.",
+    hints: ["Что запоминает бит по фронту, уже открыто. А что умеет отключать выход?", "Такт — общий на все восемь, разрешение — тоже общее. Сверьте выводы: Q идут навстречу D."],
+    package: "DIP",
+    roles: ["in", "in", "in", "in", "in", "in", "in", "in", "in", "gnd", "in", "out", "out", "out", "out", "out", "out", "out", "out", "vcc"],
+    names: ["OE̅", "D0", "D1", "D2", "D3", "D4", "D5", "D6", "D7", "", "CP", "Q7", "Q6", "Q5", "Q4", "Q3", "Q2", "Q1", "Q0", ""],
+    io: { inputs: [11, 1, 2, 3, 4, 5, 6, 7, 8, 9], outputs: [19, 18, 17, 16, 15, 14, 13, 12] },
+    room: 1200,
+    // CP OE̅ D0…D7
+    sequence: seq("*0000000000", "1000000000", "0010110010", "1010110010", "0010110010", "0101010101", "1101010101", "0001010101", "0011111111", "1011111111", "0111111111", "0011111111", "1000000000"),
+    kit: [
+      { part: "chip", func: "dff", count: 8 },
+      { part: "chip", func: "tbuf4", count: 2 },
+    ],
+    recipe: {
+      parts: [
+        ic("D9", "tbuf4", 14, "D", 2),
+        ic("D10", "tbuf4", 14, "D", 10),
+        ...[0, 1, 2, 3, 4].map((i) => sot(`D${1 + i}`, "dff", "D", 18 + 4 * i)),
+        ...[0, 1, 2].map((i) => sot(`D${6 + i}`, "dff", "H", 2 + 4 * i)),
+      ],
+      nets: [
+        ...power("P20", "P10", [{ id: "D9", vcc: 14, gnd: 7 }, { id: "D10", vcc: 14, gnd: 7 }, ...gates("D1", "D2", "D3", "D4", "D5", "D6", "D7", "D8")]),
+        ["P11", ...[1, 2, 3, 4, 5, 6, 7, 8].map((k) => `D${k}.2`)],
+        ["P1", "D9.1", "D9.4", "D9.10", "D9.13", "D10.1", "D10.4", "D10.10", "D10.13"],
+        // Бит k: D — вывод 2 + k, триггер D(k+1), буфер — у D9 (биты 0–3) и D10 (4–7), выход Qk — вывод 19 − k
+        ...[0, 1, 2, 3, 4, 5, 6, 7].flatMap((k) => {
+          const buf = k < 4 ? "D9" : "D10";
+          const [a, y] = [[2, 3], [5, 6], [9, 8], [12, 11]][k % 4];
+          return [[`P${2 + k}`, `D${k + 1}.1`], [`D${k + 1}.4`, `${buf}.${a}`], [`${buf}.${y}`, `P${19 - k}`]];
+        }),
+      ],
+    },
+  },
   // ─── Числа: разряд компаратора → 74HC85; 74HC595; проект АЛУ ─────────────────────────────
   {
     id: "mag1",
@@ -2581,6 +2661,8 @@ export const FUNC_NAMES: Record<LogicFunc, string> = {
   cnt4017: "Счётчик «один из десяти»",
   tbuf: "Буфер с тремя состояниями",
   tbuf4: "Четыре буфера с тремя состояниями",
+  buf8z: "Восемь буферов с тремя состояниями",
+  reg8z: "Восьмиразрядный регистр",
   timer: "Таймер 555",
   mag1: "Разряд компаратора",
   mag4: "Компаратор чисел 4 бит",

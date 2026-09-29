@@ -20,7 +20,7 @@ export function chipPinName(def: ChipDef, i: number): string {
 
 /** Инструмент установки микросхемы из библиотеки. */
 export function chipTool(def: ChipDef) {
-  const soic = !isSot(def.package) && [4, 6, 8, 14, 16].includes(def.pins);
+  const soic = !isSot(def.package) && [4, 6, 8, 14, 16, 18, 20].includes(def.pins);
   return toolFor<Chip>()({
     id: `chip:${def.id}`,
     group: "chips",

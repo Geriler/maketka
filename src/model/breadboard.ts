@@ -98,7 +98,7 @@ export interface Seat {
  * потенциометр), TH2-k (два вывода через k шагов: резистор, диод, светодиод…). NODE — узел
  * дорожки: точка излома или развилки, без детали.
  */
-export type SmdFootprint = "SOT-23" | "SOT-23-5" | "SOT-23-6" | "SOT-143" | "SO-4" | "SO-6" | "SO-8" | "SO-14" | "SO-16" | "1206" | "0805" | "0603" | "0402";
+export type SmdFootprint = "SOT-23" | "SOT-23-5" | "SOT-23-6" | "SOT-143" | "SO-4" | "SO-6" | "SO-8" | "SO-14" | "SO-16" | "SO-18" | "SO-20" | "1206" | "0805" | "0603" | "0402";
 export type Footprint = SmdFootprint | `DIP-${number}` | "TH3" | `TH2-${number}` | "DISP-10" | "NODE";
 
 /** Выводное посадочное место (отверстия), а не SMD. */
@@ -129,6 +129,8 @@ const CHIP_PADS: Record<string, { c: number; w: number; d: number; body: [number
 /** SOT-23: шаг 0,95 мм, ряды площадок в ±1,1 мм от центра; SOIC: шаг 1,27 мм, ряды в ±2,7 мм. */
 const SOT = { pitch: 0.95, row: 1.1, w: 0.6, d: 1.0 };
 const SO = { pitch: 1.27, row: 2.7, w: 0.6, d: 1.55 };
+/** Широкий SOIC (18 и 20 выводов, JEDEC MS-013): корпус 7,5 мм, ряды площадок через 9,3 мм. */
+const SOW = { pitch: 1.27, row: 4.65, w: 0.6, d: 2.0 };
 
 /** Площадки корпуса по порядку выводов (1…n), мм. */
 export function footprintPads(fp: Footprint): PadMm[] {
@@ -157,7 +159,8 @@ export function footprintPads(fp: Footprint): PadMm[] {
   if (fp === "SOT-23-6") return [at(SOT, -1, true), at(SOT, 0, true), at(SOT, 1, true), at(SOT, 1, false), at(SOT, 0, false), at(SOT, -1, false)];
   const n = Number(fp.slice(3));
   const k = n / 2;
-  return Array.from({ length: n }, (_, i) => (i < k ? at(SO, i - (k - 1) / 2, true) : at(SO, n - 1 - i - (k - 1) / 2, false)));
+  const g = n >= 18 ? SOW : SO;
+  return Array.from({ length: n }, (_, i) => (i < k ? at(g, i - (k - 1) / 2, true) : at(g, n - 1 - i - (k - 1) / 2, false)));
 }
 
 /** Корпус детали: длина вдоль ряда выводов, ширина, высота, мм. */
@@ -169,7 +172,7 @@ export function footprintBody(fp: Footprint): [number, number, number] {
   if (fp === "SOT-23" || fp === "SOT-143") return [2.9, 1.3, 1.0];
   if (fp === "SOT-23-5" || fp === "SOT-23-6") return [2.9, 1.6, 1.1];
   const n = Number(fp.slice(3));
-  return [(n / 2) * 1.27 - 0.2, 3.9, 1.5];
+  return n >= 18 ? [(n / 2) * 1.27 + 0.1, 7.5, 2.65] : [(n / 2) * 1.27 - 0.2, 3.9, 1.5];
 }
 
 /** Поворот на rot четвертей оборота (как rotation.y в сцене). */
@@ -258,8 +261,8 @@ export type ChipPackage = "DIP" | "SOT-23-5" | "SOT-23-6" | "SOT-143";
 /** Крошечный корпус на переходнике. */
 export const isSot = (pkg: ChipPackage | undefined): pkg is "SOT-23-5" | "SOT-23-6" | "SOT-143" => pkg === "SOT-23-5" || pkg === "SOT-23-6" || pkg === "SOT-143";
 
-/** Корпуса, которые можно выбрать: «DIP-4» … «DIP-16», «SOT-23-5», «SOT-23-6», «SOT-143». */
-export const PACKAGES = ["DIP-4", "DIP-6", "DIP-8", "DIP-14", "DIP-16", "SOT-23-5", "SOT-23-6", "SOT-143"];
+/** Корпуса, которые можно выбрать: «DIP-4» … «DIP-20», «SOT-23-5», «SOT-23-6», «SOT-143». */
+export const PACKAGES = ["DIP-4", "DIP-6", "DIP-8", "DIP-14", "DIP-16", "DIP-18", "DIP-20", "SOT-23-5", "SOT-23-6", "SOT-143"];
 
 /** Название корпуса: «DIP-8», «SOT-23-5». */
 export function packageName(pkg: ChipPackage | undefined, pins: number): string {

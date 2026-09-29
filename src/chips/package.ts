@@ -11,8 +11,8 @@ import { part } from "../parts";
 import { buildNetlist } from "../view/schematic";
 import { chipsUsed } from "./registry";
 
-/** Больше выводов в DIP пока не бывает. */
-export const MAX_CHIP_PINS = 16;
+/** Больше выводов в DIP пока не бывает (DIP-20 — шинные буферы и регистры 74HC245, 574…). */
+export const MAX_CHIP_PINS = 20;
 
 /** Приборы: их щупы можно ставить куда угодно, в том числе внутрь корпуса. */
 function instrument(c: Component): boolean {

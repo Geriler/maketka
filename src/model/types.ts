@@ -412,7 +412,7 @@ export interface ChipDef {
   name: string;
   /** Корпус: DIP или SOT-23-5 на переходнике. */
   package: ChipPackage;
-  /** Выводов в корпусе (у DIP — чётное, 4…16). */
+  /** Выводов в корпусе (у DIP — чётное, 4…20). */
   pins: number;
   /** Имена выводов 1…pins ("" — без имени, "NC" — не подключён). */
   pinNames: string[];
@@ -456,7 +456,7 @@ export type Component = Resistor | Lamp | Battery | Switch | Capacitor | Diode |
 export type ComponentType = Component["type"];
 
 /** Конец провода: отверстие макетки или вывод свободно стоящей детали. */
-/** Номер вывода детали с нуля (у микросхем их до 16). */
+/** Номер вывода детали с нуля (у микросхем их до 20). */
 export type Pin = number;
 export type Endpoint = { hole: string } | { comp: string; pin: Pin };
 
@@ -612,7 +612,7 @@ export function boardConflicts(scene: Scene, boards: readonly BoardSpec[]): stri
 
 
 /** Корпуса SO-n, для которых есть посадочное место. */
-const SO_PINS = [4, 6, 8, 14, 16];
+const SO_PINS = [4, 6, 8, 14, 16, 18, 20];
 
 /** Шаг выводов аксиальной детали, в шагах 2,54 мм: корпус плюс по 1,25 мм на загиб (резистор 0,25 Вт — 10,16 мм). */
 const axialSpan = (lengthMm: number) => Math.max(3, Math.ceil((lengthMm + 2.5) / 2.54));
