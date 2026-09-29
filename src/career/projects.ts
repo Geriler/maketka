@@ -60,6 +60,13 @@ function runner(scene: Scene) {
   return { sim, run, hurt, disp, peak: () => peak };
 }
 
+/** Где светодиод по оси X стола: по отверстию первого вывода или по месту на столе. */
+function ledX(c: Component): number {
+  const p = c.placement;
+  if (p.mode === "free") return p.x;
+  return HOLE_BY_ID.get(p.holes[0])?.x ?? 0;
+}
+
 /** Шаги «сегменты горят в меру» и «ничего не сгорело». */
 function displaySteps(peak: number, hurt: Set<string>): LessonStep[] {
   return [
@@ -180,6 +187,55 @@ export function adcRun(scene: Scene) {
     return { vin, digit: r.disp ? shownDigit(r.disp, r.sim) : -1 };
   });
   return { rows, peak: r.peak(), hurt: r.hurt };
+}
+
+// ─── Порог с гистерезисом: вход — источник G2, выход — столбец 30 ─────────────
+
+/** Куда выведены вход (нижняя половина, ряд j) и где выход (верхняя, ряд a). */
+export const HYST_PINS = { vin: "j2", out: "a30" };
+/** Пороги: вверх — включение, вниз — выключение, В; допуск ± 0,15 В. */
+export const HYST = { on: 3, off: 2, tol: 0.15 };
+
+/** Стол: регулируемый источник G2 (0–5 В) на столбце 2. */
+function hystBench(id: string): Scene {
+  const s = projectBench(id);
+  s.components.push({ id: "G2", type: "psu", volts: 1, amps: 0.1, on: true, placement: free(-26, 18), stock: true } as Component);
+  s.wires.push(
+    { id: "WV1", a: { comp: "G2", pin: 1 }, b: { hole: HYST_PINS.vin }, color: "#e3b21c" },
+    { id: "WV2", a: { comp: "G2", pin: 0 }, b: { comp: "G1", pin: 0 }, color: "#1b1d20" },
+  );
+  return s;
+}
+
+/** Вход плавно от 1 до 4 В и обратно (шаг 50 мВ): где выход переключился и какие уровни. */
+export function hystRun(scene: Scene) {
+  const r = runner(scene);
+  const g2 = r.sim.scene.components.find((c) => c.id === "G2") as Extract<Component, { type: "psu" }> | undefined;
+  const g1 = r.sim.scene.components.find((c) => c.id === "G1")!;
+  const out = () => (r.sim.solution.voltage.get(HOLE_BY_ID.get(HYST_PINS.out)!.node) ?? 0) - (r.sim.solution.voltage.get(pinNode(g1, 0)) ?? 0);
+  const points: number[] = [];
+  for (let v = 1; v <= 4.001; v += 0.05) points.push(v);
+  const sweep = [...points, ...points.slice().reverse()];
+  let up: number | undefined, down: number | undefined;
+  let hi = 0, lo = 5;
+  if (g2) g2.volts = sweep[0];
+  r.run(0.1);
+  let prev = out() > 2.5;
+  sweep.forEach((v, i) => {
+    if (g2) g2.volts = v;
+    r.run(0.02);
+    const o = out();
+    const now = o > 2.5;
+    if (now) hi = Math.max(hi, o);
+    else lo = Math.min(lo, o);
+    const rising = i < points.length;
+    if (now !== prev) {
+      if (rising && now && up === undefined) up = v;
+      if (!rising && !now && down === undefined) down = v;
+    }
+    prev = now;
+  });
+  return { up, down, hi, lo, hurt: r.hurt };
 }
 
 const chip = (func: LogicFunc, count = 1): KitItem => ({ part: "chip", func, count });
@@ -347,6 +403,77 @@ export const PROJECTS: Lesson[] = [
       return [
         { text: `Показывает число ступенек: ${rows.map((x) => `${String(x.vin).replace(".", ",")} В → ${show(x.digit)}`).join(", ")}${bad ? ` (при ${String(bad.vin).replace(".", ",")} В нужно ${want(bad.vin)})` : ""}`, ok: !bad },
         ...displaySteps(peak, hurt),
+      ];
+    },
+  },
+  {
+    id: "proj-lights",
+    project: true,
+    title: "Бегущие огни",
+    about:
+      "Десять светодиодов в ряд: горит один, и огонёк бежит слева направо, после крайнего правого — снова с левого. Каждый шаг — 0,1–0,5 с. «Слева направо» — по тому, как светодиоды стоят на столе. Питание 5 В — на верхних шинах. Проверка смотрит 4 секунды: в каждый момент горит не больше одного, по порядку, и огонёк проходит весь ряд.",
+    hints: [
+      "Что из открытого умеет само давать импульсы? А что по каждому импульсу переводит единицу на следующий выход из десяти?",
+      "Выход логики даёт несколько миллиампер — светодиоду хватит через резистор. Входы, которыми не пользуетесь, куда-то подключите.",
+    ],
+    kit: [
+      chip("timer"),
+      chip("cnt4017"),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 10 },
+      { part: "resistor", ohms: 1000, count: 10 },
+      { part: "resistor", ohms: 10_000, count: 2 },
+      { part: "other", type: "capacitor", tool: "cap", preset: { variant: "electrolytic", electrolyticUF: 10, electrolyticV: 16 }, match: { variant: "electrolytic", uF: 10 }, label: "конденсатор 10 мкФ", count: 1 },
+    ],
+    start: () => projectBench("proj-lights"),
+    check(scene) {
+      const leds = of(scene, "led");
+      if (leds.length < 10) return [{ text: "На столе десять светодиодов", ok: false }];
+      const order = [...leds].sort((a, b) => ledX(a) - ledX(b)).map((l) => l.id);
+      const r = runner(scene);
+      const me = order.map((id) => r.sim.scene.components.find((c) => c.id === id)!);
+      r.run(0.5);
+      const seen: { t: number; k: number }[] = [];
+      let many = 0;
+      const dt = 0.005;
+      for (let t = 0; t < 4; t += dt) {
+        r.run(dt, dt);
+        const lit = me.map((c, k) => (Math.abs(r.sim.current(c)) > 0.001 ? k : -1)).filter((k) => k >= 0);
+        if (lit.length > 1) many++;
+        if (lit.length === 1 && seen.at(-1)?.k !== lit[0]) seen.push({ t, k: lit[0] });
+      }
+      const steps = seen.slice(1).map((s, i) => ({ ok: s.k === (seen[i].k + 1) % 10, dt: s.t - seen[i].t }));
+      const inOrder = steps.length >= 8 && steps.every((s) => s.ok);
+      const gaps = steps.slice(0, -1).map((s) => s.dt);
+      const even = gaps.length > 0 && gaps.every((g) => g >= 0.1 && g <= 0.5);
+      const all = new Set(seen.map((s) => s.k)).size === 10;
+      return [
+        { text: `Горят по одному, слева направо: ${seen.map((s) => s.k + 1).join(" ") || "ни один не загорается"}`, ok: inOrder && many < 4 },
+        { text: `Огонёк проходит все десять — сейчас ${new Set(seen.map((s) => s.k)).size}`, ok: all },
+        { text: `Шаг 0,1–0,5 с — сейчас ${gaps.length ? `${formatSI(Math.min(...gaps), "с")}…${formatSI(Math.max(...gaps), "с")}` : "—"}`, ok: even },
+        noHurt([...r.hurt]),
+      ];
+    },
+  },
+  {
+    id: "proj-hyst",
+    project: true,
+    title: "Порог с гистерезисом",
+    about:
+      "Выход включается, когда вход поднимется до 3 В, и выключается, только когда вход опустится до 2 В; между 2 и 3 В — остаётся каким был. Так порог не дребезжит, когда сигнал шумит около него. Вход — источник G2 на столбце 2 (ряды f–j), выход — на столбец 30 (ряды a–e): включён — не ниже 4 В, выключен — не выше 0,4 В. Питание 5 В — на верхних шинах. Проверка плавно поднимает вход от 1 до 4 В и опускает обратно; пороги — с точностью 0,15 В.",
+    hints: [
+      "Один компаратор сравнивает вход с одним порогом. Как сделать, чтобы порог сам сдвигался, когда выход переключился?",
+      "Опорные 2,5 В удобно взять с делителя. Разница между порогами — 1 В: от чего она будет зависеть? И у LMV331 выход — открытый коллектор.",
+    ],
+    kit: [chip("cmp"), { part: "resistor", ohms: 10_000, count: 3 }, { part: "resistor", ohms: 20_000, count: 1 }, { part: "resistor", ohms: 100_000, count: 1 }],
+    start: () => hystBench("proj-hyst"),
+    check(scene) {
+      const { up, down, hi, lo, hurt } = hystRun(scene);
+      const v = (x: number | undefined) => (x === undefined ? "не переключился" : formatSI(x, "В"));
+      return [
+        { text: `Вход вверх: включается при ${HYST.on} ± ${HYST.tol} В — сейчас ${v(up)}`, ok: up !== undefined && Math.abs(up - HYST.on) <= HYST.tol },
+        { text: `Вход вниз: выключается при ${HYST.off} ± ${HYST.tol} В — сейчас ${v(down)}`, ok: down !== undefined && Math.abs(down - HYST.off) <= HYST.tol },
+        { text: `Уровни выхода: включён — не ниже 4 В, выключен — не выше 0,4 В — сейчас ${formatSI(hi, "В")} и ${formatSI(lo, "В")}`, ok: hi >= 4 && lo <= 0.4 },
+        noHurt([...hurt]),
       ];
     },
   },

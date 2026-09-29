@@ -179,3 +179,53 @@ describe("проект «Вольтметр»", () => {
     expect(steps.every((s) => s.ok), `${Math.round(performance.now() - t0)} мс\n` + steps.map((s) => `${s.ok ? "✓" : "✗"} ${s.text}`).join("\n")).toBe(true);
   }, 180000);
 });
+
+describe("проект «Бегущие огни»", () => {
+  it("555 → 74HC4017 → 10 светодиодов: бегут по порядку; перепутанный провод — нет", () => {
+    const build = (swap: boolean) => {
+      const r = (id: string, ohms: number): Component => ({ id, type: "resistor", variant: "tht", ohms, smdSize: "0805", placement: f });
+      const comps: Component[] = [chip("D1", "ref:ne555"), chip("D2", "ref:hc4017"), r("RA", 10_000), r("RB", 10_000), { id: "C1", type: "capacitor", variant: "electrolytic", uF: 10, volts: 16, placement: f }];
+      const wires: [Endpoint, Endpoint][] = [
+        [plus, P("D1", 8)], [minus, P("D1", 1)], [plus, P("D1", 4)],
+        [plus, { comp: "RA", pin: 0 }], [{ comp: "RA", pin: 1 }, P("D1", 7)], [P("D1", 7), { comp: "RB", pin: 0 }], [{ comp: "RB", pin: 1 }, P("D1", 6)], [P("D1", 6), P("D1", 2)],
+        [P("D1", 6), { comp: "C1", pin: 0 }], [{ comp: "C1", pin: 1 }, minus],
+        [plus, P("D2", 16)], [minus, P("D2", 8)], [P("D1", 3), P("D2", 14)], [minus, P("D2", 13)], [minus, P("D2", 15)],
+      ];
+      // Q0…Q9 — выводы 3, 2, 4, 7, 10, 1, 5, 6, 9, 11; светодиоды стоят по x слева направо
+      const q = [3, 2, 4, 7, 10, 1, 5, 6, 9, 11];
+      if (swap) [q[3], q[4]] = [q[4], q[3]];
+      q.forEach((p, k) => {
+        comps.push(r(`RL${k}`, 1000), { id: `HL${k}`, type: "led", color: "red", placement: { mode: "free", x: 4 * k, z: 10, rot: 0 } });
+        wires.push([P("D2", p), { comp: `RL${k}`, pin: 0 }], [{ comp: `RL${k}`, pin: 1 }, { comp: `HL${k}`, pin: 0 }], [{ comp: `HL${k}`, pin: 1 }, minus]);
+      });
+      return solved("proj-lights", comps, wires);
+    };
+    const project = PROJECTS.find((p) => p.id === "proj-lights")!;
+    const steps = project.check(build(false));
+    expect(steps.every((s) => s.ok), steps.map((s) => `${s.ok ? "✓" : "✗"} ${s.text}`).join("\n")).toBe(true);
+    expect(project.check(build(true))[0].ok).toBe(false);
+  }, 180000);
+});
+
+describe("проект «Порог с гистерезисом»", () => {
+  it("LMV331 с положительной обратной связью: 3 В вверх, 2 В вниз; без обратной связи — один порог", () => {
+    const build = (feedback: boolean) => {
+      const r = (id: string, ohms: number): Component => ({ id, type: "resistor", variant: "tht", ohms, smdSize: "0805", placement: f });
+      const comps: Component[] = [chip("DA1", "ref:lmv331"), r("RD1", 10_000), r("RD2", 10_000), r("RP", 10_000), r("R1", 20_000), r("R2", 100_000)];
+      const hole = (h: string): Endpoint => ({ hole: h });
+      const wires: [Endpoint, Endpoint][] = [
+        [plus, P("DA1", 5)], [minus, P("DA1", 2)],
+        [plus, { comp: "RD1", pin: 0 }], [{ comp: "RD1", pin: 1 }, P("DA1", 3)], [P("DA1", 3), { comp: "RD2", pin: 0 }], [{ comp: "RD2", pin: 1 }, minus],
+        [hole("j2"), { comp: "R1", pin: 0 }], [{ comp: "R1", pin: 1 }, P("DA1", 1)],
+        [P("DA1", 4), { comp: "RP", pin: 0 }], [{ comp: "RP", pin: 1 }, plus], [P("DA1", 4), hole("a30")],
+      ];
+      if (feedback) wires.push([P("DA1", 4), { comp: "R2", pin: 0 }], [{ comp: "R2", pin: 1 }, P("DA1", 1)]);
+      return solved("proj-hyst", comps, wires);
+    };
+    const project = PROJECTS.find((p) => p.id === "proj-hyst")!;
+    const steps = project.check(build(true));
+    expect(steps.every((s) => s.ok), steps.map((s) => `${s.ok ? "✓" : "✗"} ${s.text}`).join("\n")).toBe(true);
+    const plain = project.check(build(false));
+    expect(plain[0].ok && plain[1].ok, plain.map((s) => s.text).join("\n")).toBe(false);
+  }, 180000);
+});

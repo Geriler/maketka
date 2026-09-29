@@ -11,7 +11,7 @@ import type { ChipPackage, ChipPinRole } from "../model/breadboard";
 import type { DiodeKind, MosfetKind, TransistorKind } from "../model/types";
 
 /** Логическая функция компонента. */
-export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5";
+export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017";
 
 /** Деталь набора: сколько штук и что именно (тип и номинал). */
 export type KitItem =
@@ -117,7 +117,7 @@ export function gateIo(level: Level): { inputs: number[]; outputs: number[]; vcc
 }
 
 /** Схемы с памятью: выход зависит не только от входов, но и от того, что было раньше. */
-export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595"];
+export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017"];
 
 /**
  * Сегменты a…g цифр 0…9 — как у 74HC4511 по таблице TI (SCHS279E): шестёрка без верхней черты,
@@ -184,6 +184,15 @@ export function seqNext(func: LogicFunc, q: number, prev: boolean[] | undefined,
   if (func === "sreg8") return !bits[3] ? 0 : rising(prev, bits, 2) ? ((q << 1) | +(prev![0] && prev![1])) & 255 : q;
   // 74HC393 (1CLK, 1CLR, 2CLK, 2CLR): два независимых счётчика, второй — в старших четырёх разрядах
   if (func === "cnt393") return count393(q & 15, prev, bits, 0, 1) | (count393(q >> 4, prev, bits, 2, 3) << 4);
+  // Счётчик Джонсона (CLK, CLR̅): по фронту A берёт Ē, остальные сдвигаются (A — младший бит)
+  if (func === "johnson") return !bits[1] ? 0 : rising(prev, bits, 0) ? ((q << 1) & 31) | (q & 16 ? 0 : 1) : q;
+  // 74HC4017 (CP0, CP1̅, MR): MR = 1 — ноль; счёт по фронту CP0 при CP1̅ = 0 и по спаду CP1̅ при
+  // CP0 = 1 — то есть по фронту «CP0 и не CP1̅» (таблица Nexperia 74HC4017, TI SCHS200)
+  if (func === "cnt4017") {
+    if (bits[2]) return 0;
+    const en = (b: boolean[]) => b[0] && !b[1];
+    return prev && !en(prev) && en(bits) ? (q + 1) % 10 : q;
+  }
   return q;
 }
 
@@ -198,6 +207,10 @@ export function seqOuts(func: LogicFunc, q: number, bits: boolean[]): boolean[] 
   if (func === "dlatch") return [!!q, !q];
   if (func === "cnt4" || func === "sreg4") return [0, 1, 2, 3].map((k) => !!(q & (1 << k)));
   if (func === "sreg8" || func === "cnt393") return [0, 1, 2, 3, 4, 5, 6, 7].map((k) => !!(q & (1 << k)));
+  // Джонсон: A…E, затем Ā…Ē
+  if (func === "johnson") return [0, 1, 2, 3, 4].map((k) => !!(q & (1 << k))).concat([0, 1, 2, 3, 4].map((k) => !(q & (1 << k))));
+  // 4017: Q0…Q9 — единица у номера счёта; Q5-9̅ — единица при счёте 0…4
+  if (func === "cnt4017") return [...[0, 1, 2, 3, 4, 5, 6, 7, 8, 9].map((k) => q === k), q < 5];
   return [!!(q & 1)];
 }
 
@@ -206,6 +219,8 @@ export function seqState(func: LogicFunc, outs: boolean[]): number {
   // По сегментам — какая цифра горит (погашенный или «8» от LT̅ — как получится: это только начало)
   if (func === "sreg595") return (outs.slice(0, 8).reduce((m, b, k) => m | (b ? 1 << k : 0), 0) << 8) | (outs[8] ? 128 : 0);
   if (func === "bcd7") return Math.max(0, SEGMENTS.indexOf(outs.map((b) => (b ? "1" : "0")).join("")));
+  if (func === "johnson") return outs.slice(0, 5).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
+  if (func === "cnt4017") return Math.max(0, outs.slice(0, 10).indexOf(true));
   return ["cnt4", "sreg4", "sreg8", "cnt393"].includes(func) ? outs.reduce((m, b, k) => m | (b ? 1 << k : 0), 0) : +!!outs[0];
 }
 
@@ -256,6 +271,8 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
     case "tffr":
     case "sreg8":
     case "cnt393":
+    case "johnson":
+    case "cnt4017":
     case "bcd7":
     case "timer":
     case "sreg595":
@@ -2095,6 +2112,116 @@ export const LEVELS: Level[] = [
       ],
     },
   },
+  // ─── Счётчик «один из десяти»: Джонсон на 74HC164 → 74HC4017 ──────────────────────────────
+  {
+    id: "johnson",
+    func: "johnson",
+    part: "Джонсон ×5",
+    title: "Счётчик Джонсона",
+    intermediate: true,
+    about: `Пять разрядов A…E: после сброса (CLR̅ = 0) все нули, дальше по каждому фронту CLK — 10000, 11000, 11100, 11110, 11111, 01111, 00111, 00011, 00001 и снова 00000: десять состояний, и соседние отличаются одним разрядом. Кроме A…E — их противоположности Ā…Ē. Выводы: 1 CLK, 2 CLR̅, 3 A, 4 B, 5 C, 6 D, 7 GND, 8 E, 9 Ē, 10 D̄, 11 C̄, 12 B̄, 13 Ā, 14 VCC. ${STEP}`,
+    hints: [
+      "Посмотрите на ряд состояний: каждый следующий — это предыдущий, сдвинутый на разряд. Что вдвигается в A — и откуда это взять?",
+      "Противоположности каждого разряда нужны отдельными выводами. Одна из них уже понадобилась для сдвига.",
+    ],
+    package: "DIP",
+    roles: ["in", "in", "out", "out", "out", "out", "gnd", "out", "out", "out", "out", "out", "out", "vcc"],
+    names: ["CLK", "CLR̅", "A", "B", "C", "D", "", "E", "Ē", "D̄", "C̄", "B̄", "Ā", ""],
+    io: { inputs: [1, 2], outputs: [3, 4, 5, 6, 8, 13, 12, 11, 10, 9] },
+    room: 800,
+    sequence: seq("*00", "01", "11", "01", "11", "01", "11", "01", "11", "01", "11", "01", "11", "01", "11", "01", "11", "01", "11", "01", "11", "01", "11", "01", "00", "01", "11", "01"),
+    kit: [
+      { part: "chip", func: "sreg8", count: 1 },
+      { part: "chip", func: "not", count: 5 },
+    ],
+    recipe: {
+      parts: [ic("D1", "sreg8", 14, "D", 2), sot("D2", "not", "D", 10), sot("D3", "not", "D", 14), sot("D4", "not", "D", 18), sot("D5", "not", "D", 22), sot("D6", "not", "H", 2)],
+      nets: [
+        ...power("P14", "P7", [{ id: "D1", vcc: 14, gnd: 7 }, ...gates("D2", "D3", "D4", "D5", "D6")]),
+        ["P1", "D1.8"],
+        ["P2", "D1.9"],
+        // В QA вдвигается Ē (A и B входа 164 — вместе)
+        ["D6.4", "D1.1", "D1.2", "P9"],
+        ["D1.3", "P3", "D2.2"],
+        ["D1.4", "P4", "D3.2"],
+        ["D1.5", "P5", "D4.2"],
+        ["D1.6", "P6", "D5.2"],
+        ["D1.10", "P8", "D6.2"],
+        ["D2.4", "P13"],
+        ["D3.4", "P12"],
+        ["D4.4", "P11"],
+        ["D5.4", "P10"],
+      ],
+    },
+  },
+  {
+    id: "hc4017",
+    func: "cnt4017",
+    part: "74HC4017",
+    title: "Счётчик «один из десяти»",
+    about:
+      "Настоящая микросхема: десять выходов Q0…Q9, горит ровно один — номер счёта. По каждому фронту CP0 (при CP1̅ = 0) единица переходит на следующий выход, после Q9 — снова Q0. CP1̅ = 1 запрещает счёт; ещё счёт идёт по спаду CP1̅, когда CP0 = 1. MR = 1 — сразу в Q0. Q5-9̅ — единица, пока счёт 0…4: для цепочки счётчиков. Выводы — как у 74HC4017 (Nexperia, TI SCHS200): 1 Q5, 2 Q1, 3 Q0, 4 Q2, 5 Q6, 6 Q7, 7 Q3, 8 GND, 9 Q8, 10 Q4, 11 Q9, 12 Q5-9̅, 13 CP1̅, 14 CP0, 15 MR, 16 VCC.",
+    hints: [
+      "У счётчика Джонсона десять состояний — и каждое можно узнать всего по двум соседним разрядам. По каким двум — для 0, для 5, для остальных?",
+      "Когда счёт разрешён, — это одно условие из двух входов. А сброс единицей, а у ступеньки — нулём.",
+    ],
+    package: "DIP",
+    roles: ["out", "out", "out", "out", "out", "out", "out", "gnd", "out", "out", "out", "out", "in", "in", "in", "vcc"],
+    names: ["Q5", "Q1", "Q0", "Q2", "Q6", "Q7", "Q3", "", "Q8", "Q4", "Q9", "Q5-9̅", "CP1̅", "CP0", "MR", ""],
+    io: { inputs: [14, 13, 15], outputs: [3, 2, 4, 7, 10, 1, 5, 6, 9, 11, 12] },
+    room: 1200,
+    // CP0 CP1̅ MR
+    sequence: seq(
+      "*001", "000",
+      "100", "000", "100", "000", "100", "000", "100", "000", "100", "000", "100", "000", "100", "000", "100", "000", "100", "000", "100", "000", "100", "000",
+      "010", "110", "010", "000", "100", "110", "100", "000",
+      "100", "001", "000", "100", "000",
+    ),
+    kit: [
+      { part: "chip", func: "johnson", count: 1 },
+      { part: "chip", func: "and", count: 11 },
+      { part: "chip", func: "not", count: 2 },
+    ],
+    recipe: {
+      parts: [
+        ic("D1", "johnson", 14, "D", 2),
+        ...[0, 1, 2, 3, 4, 5].map((i) => sot(`D${2 + i}`, "and", "D", 10 + 4 * i)),
+        ...[0, 1, 2, 3, 4, 5, 6].map((i) => sot(`D${8 + i}`, i < 5 ? "and" : "not", "H", 2 + 4 * i)),
+      ],
+      nets: [
+        ...power("P16", "P8", [{ id: "D1", vcc: 14, gnd: 7 }, ...gates("D2", "D3", "D4", "D5", "D6", "D7", "D8", "D9", "D10", "D11", "D12", "D13", "D14")]),
+        // Такт: CP0 и не CP1̅ (D13 — инвертор CP1̅, D12 — И); сброс: MR через инвертор D14 на CLR̅
+        ["P13", "D13.2"],
+        ["P14", "D12.1"],
+        ["D13.4", "D12.2"],
+        ["D12.4", "D1.1"],
+        ["P15", "D14.2"],
+        ["D14.4", "D1.2"],
+        // Джонсон: A 3, B 4, C 5, D 6, E 8; Ā 13, B̄ 12, C̄ 11, D̄ 10, Ē 9
+        // Q0 = Ā·Ē, Q1 = A·B̄, Q2 = B·C̄, Q3 = C·D̄, Q4 = D·Ē, Q5 = A·E, Q6 = Ā·B, Q7 = B̄·C, Q8 = C̄·D, Q9 = D̄·E
+        ["D1.13", "D2.1", "D8.1"],
+        ["D1.9", "D2.2", "D6.2", "P12"],
+        ["D2.4", "P3"],
+        ["D1.3", "D3.1", "D7.1"],
+        ["D1.12", "D3.2", "D9.1"],
+        ["D3.4", "P2"],
+        ["D1.4", "D4.1", "D8.2"],
+        ["D1.11", "D4.2", "D10.1"],
+        ["D4.4", "P4"],
+        ["D1.5", "D5.1", "D9.2"],
+        ["D1.10", "D5.2", "D11.1"],
+        ["D5.4", "P7"],
+        ["D1.6", "D6.1", "D10.2"],
+        ["D6.4", "P10"],
+        ["D1.8", "D7.2", "D11.2"],
+        ["D7.4", "P1"],
+        ["D8.4", "P5"],
+        ["D9.4", "P6"],
+        ["D10.4", "P9"],
+        ["D11.4", "P11"],
+      ],
+    },
+  },
   // ─── Числа: разряд компаратора → 74HC85; 74HC595; проект АЛУ ─────────────────────────────
   {
     id: "mag1",
@@ -2345,6 +2472,8 @@ export const FUNC_NAMES: Record<LogicFunc, string> = {
   opamp2: "Два операционных усилителя",
   vref: "Источник опорного напряжения",
   reg5: "Стабилизатор 5 В",
+  johnson: "Счётчик Джонсона",
+  cnt4017: "Счётчик «один из десяти»",
   timer: "Таймер 555",
   mag1: "Разряд компаратора",
   mag4: "Компаратор чисел 4 бит",
