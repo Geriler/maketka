@@ -85,24 +85,15 @@ const PLACE: Record<string, [number, number]> = {
   "intro-scope": [0, 5],
   parts: [1, 2.5],
   "nand-cmos": [2, 0],
-  "nand-rtl": [2, 1],
-  "not-cmos": [2, 2],
-  "not-rtl": [2, 3],
-  "nor-cmos": [2, 4],
-  "nor-rtl": [2, 5],
+  "not-cmos": [2, 1.5],
+  "nor-cmos": [2, 3],
   xor: [3, 0],
-  "xor-nor": [3, 1],
-  and: [3, 2],
-  "and-nor": [3, 3],
-  or: [3, 4],
-  "or-nand": [3, 5],
-  buf: [3, 6],
+  and: [3, 1.5],
+  or: [3, 3],
+  buf: [3, 4.5],
   xnor: [4, 0],
-  "xnor-nor": [4, 1],
-  "xnor-xor": [4, 2],
   half: [4, 3.5],
   mux: [4, 5],
-  "mux-aoi": [4, 6],
   hc7266: [5, 1],
   full: [5, 3.5],
   eq2: [6, 1],
@@ -149,10 +140,10 @@ const PLACE: Record<string, [number, number]> = {
   lm321: [7, 0],
   lm358: [8, 0],
   vref: [7, 4.5],
-  tbuf: [2, 7],
-  hc125: [3, 7.5],
-  hc244: [4, 8.4],
-  hc574: [5, 8.4],
+  tbuf: [2, 5],
+  hc125: [3, 6],
+  hc244: [4, 6.25],
+  hc574: [9, 7],
   johnson: [10, 8.4],
   hc4017: [10, 9.4],
   "proj-lights": [11, 9.4],
@@ -164,6 +155,14 @@ const PLACE: Record<string, [number, number]> = {
   "proj-stopwatch": [10, 2.5],
   "proj-counter": [10, 6.5],
 };
+/**
+ * Уровни с одной функцией (И-НЕ на КМОП и на РТЛ, XNOR тремя способами…) — один узел карты:
+ * смысл у них один, а стрелок от двух-трёх узлов вдвое-втрое больше. Узел стоит там, где первый уровень группы.
+ */
+const GROUPS: Level[][] = [...new Set(LEVELS.map((l) => l.func))].map((f) => LEVELS.filter((l) => l.func === f));
+const groupOf = (id: string): Level[] | undefined => GROUPS.find((g) => g.some((l) => l.id === id));
+/** Узел карты для функции. */
+const headOf = (f: LogicFunc): string => GROUPS.find((g) => g[0].func === f)![0].id;
 /** Короткие подписи уроков на карте. */
 const SHORT: Record<string, string> = {
   "intro-led": "зажечь светодиод",
@@ -191,6 +190,14 @@ function nodeSub(l: Level): string {
   return full.length > 27 ? variant(l) : full;
 }
 
+/** Подпись группы: функция и варианты («И-НЕ · КМОП, РТЛ»), не влезают — их число. */
+function groupSub(g: Level[]): string {
+  if (g.length === 1) return nodeSub(g[0]);
+  const name = FUNC_SHORT[g[0].func] ?? FUNC_NAMES[g[0].func];
+  const full = `${name} · ${g.map(variant).join(", ")}`;
+  return full.length > 27 ? `${name} · ${plural(g.length, "вариант", "варианта", "вариантов")}` : full;
+}
+
 export class CareerMap {
   readonly el: HTMLElement;
   private chosen?: string;
@@ -205,7 +212,14 @@ export class CareerMap {
       const t = e.target as HTMLElement;
       const node = t.closest<SVGGElement>("[data-node]")?.dataset.node;
       if (node && node !== "parts") {
-        this.chosen = node;
+        // Группа: остаёмся на выбранном варианте, иначе — первый, который можно собрать
+        const g = groupOf(node);
+        this.chosen = !g ? node : g.some((l) => l.id === this.chosen) ? this.chosen : (g.find((l) => !isDone(l.id) && !missing(l).length) ?? g[0]).id;
+        return this.render();
+      }
+      const v = t.closest<HTMLElement>("[data-variant]")?.dataset.variant;
+      if (v) {
+        this.chosen = v;
         return this.render();
       }
       const act = t.closest<HTMLElement>("[data-map]")?.dataset.map;
@@ -255,15 +269,20 @@ export class CareerMap {
     // Ремонт — отдельной цепочкой после уроков про приборы (рекомендовано, не обязательно)
     edge(LESSONS.at(-1)!.id, REPAIRS[0].id, isDone(LESSONS.at(-1)!.id));
     REPAIRS.slice(1).forEach((r, i) => edge(REPAIRS[i].id, r.id, isDone(REPAIRS[i].id)));
-    for (const l of LEVELS) {
-      const n = needs(l);
-      if (!n.length) edge("parts", l.id, true);
-      for (const f of n) for (const src of LEVELS.filter((x) => x.func === f)) edge(src.id, l.id, isDone(src.id));
+    // Между группами: одна стрелка на пару, сколько бы вариантов ни было с обеих сторон
+    const groupDone = (g: Level[]) => g.some((l) => isDone(l.id));
+    for (const g of GROUPS) {
+      const from = new Set(g.flatMap((l) => (needs(l).length ? needs(l).map(headOf) : ["parts"])));
+      for (const src of from) edge(src, g[0].id, src === "parts" || groupDone(groupOf(src)!));
     }
     // Проекты: от микросхем набора (базовые вентили слева не тянем через всю карту)
-    for (const pr of PROJECTS) for (const k of pr.kit) {
-      if (k.part !== "chip") continue;
-      for (const src of LEVELS.filter((x) => x.func === k.func && !x.intermediate && PLACE[x.id][0] >= 5)) edge(src.id, pr.id, isDone(src.id));
+    for (const pr of PROJECTS) {
+      const from = new Set(pr.kit.flatMap((k) => (k.part === "chip" ? [headOf(k.func)] : [])));
+      for (const src of from) {
+        const g = groupOf(src)!;
+        if (g.every((x) => x.intermediate) || PLACE[src][0] < 5) continue;
+        edge(src, pr.id, groupDone(g));
+      }
     }
     const nodes = [
       `<g class="node done root" data-node="parts" transform="translate(${at("parts").x} ${at("parts").y})"><rect width="${W}" height="${H}" rx="10"/><text x="14" y="27" class="t">Детали</text><text x="14" y="47" class="s">транзисторы и резисторы</text></g>`,
@@ -289,15 +308,19 @@ export class CareerMap {
           <text x="14" y="27" class="t">Проект ${i + 1}${state === "done" ? " ✓" : state === "locked" ? " 🔒" : ""}</text>
           <text x="14" y="47" class="s">${esc(l.title)}</text></g>`;
       }),
-      ...LEVELS.map((l) => {
-        const p = at(l.id);
-        const state = isDone(l.id) ? "done" : missing(l).length ? "locked" : "open";
+      ...GROUPS.map((g) => {
+        const l = g[0], p = at(l.id);
+        const done = g.filter((x) => isDone(x.id)).length;
+        const state = done ? "done" : g.every((x) => missing(x).length) ? "locked" : "open";
         // Задачи: ★ — все выполнены, ☆ — есть невыполненные
-        const goals = l.goals ? (l.goals.every((g) => goalMet(g, bestOf(l.id))) ? " ★" : " ☆") : "";
-        return `<g class="node ${state}${l.intermediate ? " step" : ""}${this.chosen === l.id ? " chosen" : ""}" data-node="${l.id}" transform="translate(${p.x} ${p.y})" tabindex="0" role="button" aria-label="${esc(l.part)}">
-          <rect width="${W}" height="${H}" rx="10"/>
-          <text x="14" y="27" class="t">${esc(l.part)}${state === "done" ? " ✓" : state === "locked" ? " 🔒" : ""}${goals}</text>
-          <text x="14" y="47" class="s">${esc(nodeSub(l))}</text></g>`;
+        const goals = g.flatMap((x) => (x.goals ?? []).map((q) => goalMet(q, bestOf(x.id))));
+        const star = goals.length ? (goals.every(Boolean) ? " ★" : " ☆") : "";
+        const mark = state === "done" ? (g.length > 1 && done < g.length ? ` ✓ ${done}/${g.length}` : " ✓") : state === "locked" ? " 🔒" : "";
+        const chosen = g.some((x) => x.id === this.chosen);
+        return `<g class="node ${state}${g.every((x) => x.intermediate) ? " step" : ""}${g.length > 1 ? " group" : ""}${chosen ? " chosen" : ""}" data-node="${l.id}" transform="translate(${p.x} ${p.y})" tabindex="0" role="button" aria-label="${esc(l.part)}">
+          ${g.length > 1 ? `<rect class="stack" x="5" y="-5" width="${W}" height="${H}" rx="10"/>` : ""}<rect width="${W}" height="${H}" rx="10"/>
+          <text x="14" y="27" class="t">${esc(l.part)}${mark}${star}</text>
+          <text x="14" y="47" class="s">${esc(groupSub(g))}</text></g>`;
       }),
     ];
     const chosen = this.chosen ? LEVELS.find((l) => l.id === this.chosen) : undefined;
@@ -345,7 +368,11 @@ export class CareerMap {
       ? `<p class="sub bad">Сначала откройте: ${esc(need.join(", "))}.</p>`
       : `<div class="row"><button class="btn inline primary" data-map="start">${started ? "Продолжить" : isDone(l.id) ? "Собрать ещё раз" : "Собрать"}</button>
          ${started ? `<button class="btn inline" data-map="restart">Начать заново</button>` : ""}</div>`;
-    return `<div class="eyebrow">${esc(FUNC_NAMES[l.func])} · ${variant(l)}</div>
+    const group = groupOf(l.id)!;
+    const tabs = group.length > 1
+      ? `<div class="variants" role="tablist">${group.map((x) => `<button class="btn inline${x === l ? " primary" : ""}" role="tab" aria-selected="${x === l}" data-variant="${x.id}">${esc(variant(x))}${isDone(x.id) ? " ✓" : missing(x).length ? " 🔒" : ""}</button>`).join("")}</div>`
+      : "";
+    return `${tabs}<div class="eyebrow">${esc(FUNC_NAMES[l.func])} · ${variant(l)}</div>
       <h3>${esc(l.part)}${isDone(l.id) ? " ✓" : ""}</h3>
       <p>${esc(l.about)}</p>
       ${l.intermediate ? `<p class="sub">Учебная ступенька: в мастерской и песочнице её нет, она нужна только для следующего уровня цепочки.</p>` : ""}
