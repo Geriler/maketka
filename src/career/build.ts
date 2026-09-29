@@ -10,7 +10,7 @@ import { chipsUsed } from "../chips/registry";
 import { countChip, plural } from "../chips/count";
 import { Simulation, heatThreshold, pinNode } from "../sim/simulation";
 import { formatSI } from "../sim/resistorCodes";
-import { FUNC_NAMES, LEVELS, SEQUENTIAL, SMD_TWIN, gateIo, kitLabel, seqNext, seqOuts, seqState, sequenceExpected, truth, type KitItem, type Level, type LogicFunc } from "./levels";
+import { FUNC_NAMES, LEVELS, SEQUENTIAL, SMD_TWIN, gateIo, kitLabel, seqNext, seqOuts, seqState, sequenceExpected, truth, zOutputs, type KitItem, type Level, type LogicFunc } from "./levels";
 import { PIN_ROLES } from "../chips/roles";
 import { MODEL_OFF, REF_ABS_MAX, chipModel, setModelSource, type ChipModel, type ModelPoint, type ModelState } from "../chips/model";
 
@@ -164,6 +164,8 @@ export interface CheckRow {
   volts: number[];
   /** Каждый выход отдельно: верен ли. */
   each: boolean[];
+  /** Выход должен быть отключён (третье состояние): идти за нагрузкой в обе стороны. */
+  z?: boolean[];
   /** Ток от питания в этом состоянии, А. */
   amps: number;
   /** Ток в каждый вход (от источника сигнала), А. */
@@ -362,8 +364,11 @@ export function truthTable(def: ChipDef, level: Level, chips: Record<string, Chi
       const q0 = seqState(level.func, lastPrep.map((v) => v > volts / 2));
       sequenceExpected(level, q0, i).forEach((e, j) => (steps[i + j].expected = e));
     }
-    const { inputs, expected, prep } = step;
-    const good = (k: number, v: number) => (expected[k] ? isHigh(v, volts) : isLow(v, volts));
+    const { inputs, prep } = step;
+    // Отключённый выход: в первом прогоне нагрузка к питанию — он должен быть единицей, во втором к общему — нулём
+    const z = level.sequence ? undefined : zOutputs(level.func, inputs);
+    const expected = step.expected.map((e, k) => (z?.[k] ? false : e));
+    const good = (k: number, v: number) => (expected[k] || z?.[k] ? isHigh(v, volts) : isLow(v, volts));
     const first = run(inputs, expected.map((e) => !e));
     if (prep) {
       lastPrep = first.volts;
@@ -372,6 +377,11 @@ export function truthTable(def: ChipDef, level: Level, chips: Record<string, Chi
     const each = expected.map((_, k) => good(k, first.volts[k]));
     const burnt = new Set(first.burnt);
     let floating = expected.map(() => false);
+    if (z?.some(Boolean)) {
+      const second = run(inputs, expected);
+      second.burnt.forEach((c) => burnt.add(c));
+      z.forEach((zk, k) => zk && (each[k] = each[k] && isLow(second.volts[k], volts)));
+    }
     // Неверный выход: он неправ сам или просто идёт за нагрузкой? Нагрузка в другую сторону покажет
     if (!each.every(Boolean)) {
       const second = run(inputs, expected);
@@ -388,6 +398,7 @@ export function truthTable(def: ChipDef, level: Level, chips: Record<string, Chi
       burned: [...burnt],
       floating,
       each,
+      ...(z ? { z } : {}),
       ok: !burnt.size && each.every(Boolean),
     });
   }
@@ -1052,6 +1063,7 @@ export function characterize(def: ChipDef, scene: Scene): ChipModel | undefined 
         logic: SEQUENTIAL.includes(level.func)
           ? (bits, prev) => seqOuts(level.func, seqNext(level.func, prev ? (prev.state ?? seqState(level.func, prev.outputs)) : 0, prev?.inputs, bits), bits)
           : (bits) => truth(level.func, bits),
+        ...(zOutputs(level.func, io.inputs.map(() => false)) ? { z: (bits: boolean[]) => zOutputs(level.func, bits)! } : {}),
         ...(SEQUENTIAL.includes(level.func)
           ? { state: (bits: boolean[], prev?: ModelState) => seqNext(level.func, prev ? (prev.state ?? seqState(level.func, prev.outputs)) : 0, prev?.inputs, bits) }
           : {}),
@@ -1091,7 +1103,7 @@ export function pointFromRows(level: Level, rows: CheckRow[], V: number, heavy: 
   const avg = (xs: number[], empty: number) => (xs.length ? xs.reduce((a, b) => a + b, 0) / xs.length : empty);
   const clamp = (r: number) => Math.min(MODEL_OFF, Math.max(0.5, r));
   const fit = (k: number, high: boolean) => {
-    const pairs = rows.map((r, i) => [r, heavy[i]] as const).filter(([r]) => r.expected[k] === high);
+    const pairs = rows.map((r, i) => [r, heavy[i]] as const).filter(([r]) => !r.z?.[k] && r.expected[k] === high);
     // Единица: нагрузка на общий, ток I = U/R, U = V − d − I·R. Ноль: к питанию, I = (V − U)/R, U = d + I·R
     const amps = (u: number, rl: number) => (high ? u : V - u) / rl;
     const rs = pairs.map(([a, b]) => {

@@ -11,7 +11,7 @@ import type { ChipPackage, ChipPinRole } from "../model/breadboard";
 import type { DiodeKind, MosfetKind, TransistorKind } from "../model/types";
 
 /** Логическая функция компонента. */
-export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017";
+export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4";
 
 /** Деталь набора: сколько штук и что именно (тип и номинал). */
 export type KitItem =
@@ -119,6 +119,16 @@ const GATE1 = { roles: ["nc", "in", "gnd", "out", "vcc"] as ChipPinRole[], names
 export function gateIo(level: Level): { inputs: number[]; outputs: number[]; vcc: number; gnd: number } {
   const pin = (r: ChipPinRole) => level.roles.map((x, i) => (x === r ? i + 1 : 0)).filter(Boolean);
   return { inputs: level.io?.inputs ?? pin("in"), outputs: level.io?.outputs ?? pin("out"), vcc: pin("vcc")[0], gnd: pin("gnd")[0] };
+}
+
+/**
+ * Какие выходы отключены (третье состояние, Z) при входах bits; undefined — у функции Z нет.
+ * В таблице такой выход должен идти за нагрузкой и к питанию, и к общему.
+ */
+export function zOutputs(func: LogicFunc, bits: boolean[]): boolean[] | undefined {
+  if (func === "tbuf") return [bits[0]];
+  if (func === "tbuf4") return [bits[0], bits[2], bits[4], bits[6]];
+  return undefined;
 }
 
 /** Задача уровня: метрика лучшей сборки не больше max. */
@@ -326,6 +336,12 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
       return [a && !b];
     case "opamp2":
       return [a && !b, c && !bits[3]];
+    // Буфер с тремя состояниями (OE̅, A): при OE̅ = 0 — A, при OE̅ = 1 — выход отключён (см. zOutputs)
+    case "tbuf":
+      return [b];
+    // 74HC125: четыре буфера, входы парами (1OE̅, 1A, 2OE̅, 2A…)
+    case "tbuf4":
+      return [bits[1], bits[3], bits[5], bits[7]];
     // Стабилизаторы: таблицей не проверяются — см. check: regulator
     case "vref":
     case "reg5":
@@ -2247,6 +2263,70 @@ export const LEVELS: Level[] = [
       ],
     },
   },
+  // ─── Третье состояние: 74LVC1G125 → 74HC125 ────────────────────────────────────────────────
+  {
+    id: "tbuf",
+    func: "tbuf",
+    part: "74LVC1G125",
+    title: "Буфер с тремя состояниями",
+    about:
+      "Настоящая микросхема: при OE̅ = 0 выход Y повторяет вход A, а при OE̅ = 1 выход отключён — ни единица, ни ноль, как будто вывода нет (третье состояние, Z). Так несколько выходов могут сидеть на одном проводе — шине — и говорить по очереди. Выводы — как у 74LVC1G125 (Nexperia): 1 OE̅, 2 A, 3 GND, 4 Y, 5 VCC. Проверка: где выход должен быть отключён, нагрузка тянет его то к питанию, то к общему — и он должен идти за ней.",
+    hints: [
+      "Выход КМОП — два ключа: один к питанию, другой к общему. Чтобы отключить выход, нужно закрыть оба. Значит, ими нельзя управлять одним проводом, как в инверторе.",
+      "Верхний ключ открыт, когда разрешено и A = 1; нижний — когда разрешено и A = 0. Какой вентиль даёт на затвор нужное для каждого из них?",
+    ],
+    roles: ["in", "in", "gnd", "out", "vcc"],
+    names: ["OE̅", "A", "", "Y", ""],
+    io: { inputs: [1, 2], outputs: [4] },
+    kit: [
+      { part: "mosfet", kind: "BS250", count: 1 },
+      { part: "mosfet", kind: "2N7000", count: 1 },
+      { part: "chip", func: "nand", count: 1 },
+      { part: "chip", func: "nor", count: 1 },
+      { part: "chip", func: "not", count: 1 },
+    ],
+    room: 40,
+    recipe: {
+      // D1 — НЕ (разрешение из OE̅), D2 — И-НЕ (затвор верхнего), D3 — ИЛИ-НЕ (затвор нижнего)
+      parts: [sot("D1", "not", "H", 2), sot("D2", "nand", "H", 6), sot("D3", "nor", "H", 10), mos("VT1", "BS250", "C", 5), mos("VT2", "2N7000", "C", 9)],
+      nets: [
+        ...power("P5", "P3", gates("D1", "D2", "D3")),
+        ["P5", "VT1.S"],
+        ["VT2.S", "P3"],
+        ["VT1.D", "VT2.D", "P4"],
+        ["P1", "D1.2", "D3.2"],
+        ["D1.4", "D2.2"],
+        ["P2", "D2.1", "D3.1"],
+        ["D2.4", "VT1.G"],
+        ["D3.4", "VT2.G"],
+      ],
+    },
+  },
+  {
+    id: "hc125",
+    func: "tbuf4",
+    part: "74HC125",
+    title: "Четыре буфера с тремя состояниями",
+    about:
+      "Настоящая микросхема: четыре независимых буфера, у каждого свой вход разрешения (OE̅ = 0 — выход повторяет вход, OE̅ = 1 — отключён). Выводы — как у 74HC125 (Nexperia): 1 1OE̅, 2 1A, 3 1Y, 4 2OE̅, 5 2A, 6 2Y, 7 GND, 8 3Y, 9 3A, 10 3OE̅, 11 4Y, 12 4A, 13 4OE̅, 14 VCC.",
+    hints: ["Внутри — четыре одиночных буфера; общие у них только питание и общий.", "Сверьте выводы по таблице: у третьего и четвёртого буферов порядок выводов обратный."],
+    package: "DIP",
+    roles: ["in", "in", "out", "in", "in", "out", "gnd", "out", "in", "in", "out", "in", "in", "vcc"],
+    names: ["1OE̅", "1A", "1Y", "2OE̅", "2A", "2Y", "", "3Y", "3A", "3OE̅", "4Y", "4A", "4OE̅", ""],
+    io: { inputs: [1, 2, 4, 5, 10, 9, 13, 12], outputs: [3, 6, 8, 11] },
+    room: 400,
+    kit: [{ part: "chip", func: "tbuf", count: 4 }],
+    recipe: {
+      parts: [0, 1, 2, 3].map((i) => sot(`D${1 + i}`, "tbuf", "D", 2 + 4 * i)),
+      nets: [
+        ...power("P14", "P7", gates("D1", "D2", "D3", "D4")),
+        ["P1", "D1.1"], ["P2", "D1.2"], ["D1.4", "P3"],
+        ["P4", "D2.1"], ["P5", "D2.2"], ["D2.4", "P6"],
+        ["P10", "D3.1"], ["P9", "D3.2"], ["D3.4", "P8"],
+        ["P13", "D4.1"], ["P12", "D4.2"], ["D4.4", "P11"],
+      ],
+    },
+  },
   // ─── Числа: разряд компаратора → 74HC85; 74HC595; проект АЛУ ─────────────────────────────
   {
     id: "mag1",
@@ -2499,6 +2579,8 @@ export const FUNC_NAMES: Record<LogicFunc, string> = {
   reg5: "Стабилизатор 5 В",
   johnson: "Счётчик Джонсона",
   cnt4017: "Счётчик «один из десяти»",
+  tbuf: "Буфер с тремя состояниями",
+  tbuf4: "Четыре буфера с тремя состояниями",
   timer: "Таймер 555",
   mag1: "Разряд компаратора",
   mag4: "Компаратор чисел 4 бит",

@@ -101,11 +101,14 @@ export const chip: PartDef<Chip> = {
           out.push({ id: `${c.id}:iv${i}`, a: node(model.vcc), b: node(p), r: 2 * pt.rIn[i] });
         } else out.push({ id: `${c.id}:in${i}`, a: node(p), b: node(model.gnd), r: pt.rIn[i] });
       });
+      const zm = sim.junction.get(`${c.id}:zm`) ?? 0;
       model.outputs.forEach((p, k) => {
+        // Третье состояние: оба ключа закрыты — выход отключён
+        const z = on && !!(zm & (1 << k));
         // Неопределённый выход (вход «висит»): оба ключа приоткрыты — выход посередине, и течёт сквозной ток
-        const x = on && !!(q! & (1 << (k + 16)));
-        const high = on && !x && !!(q! & (1 << k));
-        const low = on && !x && !high;
+        const x = on && !z && !!(q! & (1 << (k + 16)));
+        const high = on && !z && !x && !!(q! & (1 << k));
+        const low = on && !z && !x && !high;
         // Включённый ключ — источник: единица на dHigh ниже питания, ноль на dLow выше общего, и сопротивление
         out.push({ id: `${c.id}:h${k}`, a: node(model.vcc), b: node(p), r: high ? pt.rHigh[k] : x ? X_FACTOR * pt.rHigh[k] : MODEL_OFF, emf: high ? -pt.dHigh[k] : 0 });
         out.push({ id: `${c.id}:l${k}`, a: node(p), b: node(model.gnd), r: low ? pt.rLow[k] : x ? X_FACTOR * pt.rLow[k] : MODEL_OFF, emf: low ? -pt.dLow[k] : 0 });
@@ -155,6 +158,17 @@ export const chip: PartDef<Chip> = {
       });
     }
     const key = `${c.id}:q`;
+    // Отключённые выходы — по входам (если входы определены; иначе как было)
+    const zkey = `${c.id}:zm`;
+    let zm = sim.junction.get(zkey) ?? 0;
+    if (model.z && span > 0.5) {
+      const lv = inputLevels(c, model, sim, sim.memory.get(`${c.id}:seq`) as ModelState | undefined);
+      if (lv.every((l) => l !== undefined)) zm = model.z(lv as boolean[]).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
+    }
+    if (zm !== (sim.junction.get(zkey) ?? 0)) {
+      sim.junction.set(zkey, zm);
+      if (sim.junction.get(key) === q) return false;
+    }
     if (sim.junction.get(key) === q || shared.flips >= 64) return true;
     // Качается в петле без задержки — генерирует быстрее, чем видно: выходы «не определены»
     const per = (shared.per ??= new Map());
