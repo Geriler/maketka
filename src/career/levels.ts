@@ -11,7 +11,7 @@ import type { ChipPackage, ChipPinRole } from "../model/breadboard";
 import type { DiodeKind, MosfetKind, TransistorKind } from "../model/types";
 
 /** Логическая функция компонента. */
-export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z";
+export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173";
 
 /** Деталь набора: сколько штук и что именно (тип и номинал). */
 export type KitItem =
@@ -130,6 +130,8 @@ export function zOutputs(func: LogicFunc, bits: boolean[]): boolean[] | undefine
   if (func === "tbuf4") return [bits[0], bits[2], bits[4], bits[6]];
   if (func === "buf8z") return [...Array(4).fill(bits[0]), ...Array(4).fill(bits[5])];
   if (func === "reg8z") return Array(8).fill(bits[1]);
+  // 74HC173: отключены все четыре, если хоть один из OE̅1, OE̅2 в единице
+  if (func === "reg173") return Array(4).fill(bits[4] || bits[5]);
   return undefined;
 }
 
@@ -148,7 +150,7 @@ export function goalMet(g: Goal, m: { width: number; height: number; links: numb
 }
 
 /** Схемы с памятью: выход зависит не только от входов, но и от того, что было раньше. */
-export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017", "reg8z"];
+export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017", "reg8z", "cnt1", "cnt161", "reg173"];
 
 /**
  * Сегменты a…g цифр 0…9 — как у 74HC4511 по таблице TI (SCHS279E): шестёрка без верхней черты,
@@ -219,6 +221,15 @@ export function seqNext(func: LogicFunc, q: number, prev: boolean[] | undefined,
   // 74HC574 (CP, OE̅, D0…D7): по фронту CP берёт D (и при отключённых выходах)
   if (func === "reg8z") return rising(prev, bits, 0) ? prev!.slice(2, 10).reduce((m, b, k) => m | (b ? 1 << k : 0), 0) : q;
   if (func === "johnson") return !bits[1] ? 0 : rising(prev, bits, 0) ? ((q << 1) & 31) | (q & 16 ? 0 : 1) : q;
+  // Разряд синхронного счётчика (CLK, CLR̅, LOAD̅, P, ENP, T): CLR̅ = 0 — ноль сразу; по фронту CLK
+  // при LOAD̅ = 0 — берёт P, иначе при ENP = T = 1 — меняется на противоположное, иначе хранит
+  if (func === "cnt1") return !bits[1] ? 0 : rising(prev, bits, 0) ? (!prev![2] ? +prev![3] : prev![4] && prev![5] ? q ^ 1 : q) : q;
+  // 74HC161 (CLK, CLR̅, LOAD̅, ENP, ENT, A…D): то же для четырёх разрядов — загрузка главнее счёта,
+  // счёт — только при ENP = ENT = 1 (TI SCLS297D)
+  if (func === "cnt161") return !bits[1] ? 0 : rising(prev, bits, 0) ? (!prev![2] ? num(prev!.slice(5, 9)) : prev![3] && prev![4] ? (q + 1) & 15 : q) : q;
+  // 74HC173 (CP, MR, E̅1, E̅2, OE̅1, OE̅2, D0…D3): MR = 1 — ноль сразу; по фронту CP при E̅1 = E̅2 = 0
+  // берёт D, иначе хранит (Nexperia 74HC173, таблица 3)
+  if (func === "reg173") return bits[1] ? 0 : rising(prev, bits, 0) ? (!prev![2] && !prev![3] ? num(prev!.slice(6, 10)) : q) : q;
   // 74HC4017 (CP0, CP1̅, MR): MR = 1 — ноль; счёт по фронту CP0 при CP1̅ = 0 и по спаду CP1̅ при
   // CP0 = 1 — то есть по фронту «CP0 и не CP1̅» (таблица Nexperia 74HC4017, TI SCHS200)
   if (func === "cnt4017") {
@@ -241,6 +252,11 @@ export function seqOuts(func: LogicFunc, q: number, bits: boolean[]): boolean[] 
   if (func === "cnt4" || func === "sreg4") return [0, 1, 2, 3].map((k) => !!(q & (1 << k)));
   if (func === "sreg8" || func === "cnt393") return [0, 1, 2, 3, 4, 5, 6, 7].map((k) => !!(q & (1 << k)));
   if (func === "reg8z") return [0, 1, 2, 3, 4, 5, 6, 7].map((k) => !!(q & (1 << k)));
+  // Разряд счётчика: Q и перенос TC = T·Q
+  if (func === "cnt1") return [!!q, bits[5] && !!q];
+  // 74HC161: QA…QD и перенос RCO = ENT при счёте 15
+  if (func === "cnt161") return [...[0, 1, 2, 3].map((k) => !!(q & (1 << k))), q === 15 && bits[4]];
+  if (func === "reg173") return [0, 1, 2, 3].map((k) => !!(q & (1 << k)));
   // Джонсон: A…E, затем Ā…Ē
   if (func === "johnson") return [0, 1, 2, 3, 4].map((k) => !!(q & (1 << k))).concat([0, 1, 2, 3, 4].map((k) => !(q & (1 << k))));
   // 4017: Q0…Q9 — единица у номера счёта; Q5-9̅ — единица при счёте 0…4
@@ -256,7 +272,8 @@ export function seqState(func: LogicFunc, outs: boolean[]): number {
   if (func === "johnson") return outs.slice(0, 5).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
   if (func === "reg8z") return outs.slice(0, 8).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
   if (func === "cnt4017") return Math.max(0, outs.slice(0, 10).indexOf(true));
-  return ["cnt4", "sreg4", "sreg8", "cnt393"].includes(func) ? outs.reduce((m, b, k) => m | (b ? 1 << k : 0), 0) : +!!outs[0];
+  if (func === "cnt161") return outs.slice(0, 4).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
+  return ["cnt4", "sreg4", "sreg8", "cnt393", "reg173"].includes(func) ? outs.reduce((m, b, k) => m | (b ? 1 << k : 0), 0) : +!!outs[0];
 }
 
 /**
@@ -309,6 +326,9 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
     case "johnson":
     case "cnt4017":
     case "reg8z":
+    case "cnt1":
+    case "cnt161":
+    case "reg173":
     case "bcd7":
     case "timer":
     case "sreg595":
@@ -349,6 +369,9 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
     // 74HC125: четыре буфера, входы парами (1OE̅, 1A, 2OE̅, 2A…)
     case "tbuf4":
       return [bits[1], bits[3], bits[5], bits[7]];
+    // 74HC157 (E̅, S, 1I0, 1I1, 2I0, 2I1…): при E̅ = 1 все выходы — ноль, иначе S выбирает I0 или I1
+    case "mux4q":
+      return [0, 1, 2, 3].map((k) => !a && (b ? bits[3 + 2 * k] : bits[2 + 2 * k]));
     // 74HC244 (1OE̅, 1A0…1A3, 2OE̅, 2A0…2A3): две четвёрки буферов
     case "buf8z":
       return [...bits.slice(1, 5), ...bits.slice(6, 10)];
@@ -2407,6 +2430,199 @@ export const LEVELS: Level[] = [
       ],
     },
   },
+  // ─── К процессору: 74HC157, разряд счётчика → 74HC161, 74HC173 ──────────────────────────────
+  {
+    id: "hc157",
+    func: "mux4q",
+    part: "74HC157",
+    title: "Четыре мультиплексора 2→1",
+    about:
+      "Настоящая микросхема: четыре переключателя с общим выбором S — при S = 0 каждый выход nY повторяет свой вход nI0, при S = 1 — вход nI1. Вход E̅ общий: при E̅ = 1 все выходы в нуле, что бы ни было на входах. Выводы — как у 74HC157 (Nexperia, ред. 10): 1 S, 2 1I0, 3 1I1, 4 1Y, 5 2I0, 6 2I1, 7 2Y, 8 GND, 9 3Y, 10 3I1, 11 3I0, 12 4Y, 13 4I1, 14 4I0, 15 E̅, 16 VCC. Проверяется 40 наборами.",
+    hints: [
+      "Одиночный переключатель уже открыт. Чего у него нет по сравнению с таблицей этой микросхемы?",
+      "При E̅ = 1 выход — ноль при любом сигнале. Какой элемент даёт ноль, пока на одном из его входов запрет?",
+    ],
+    package: "DIP",
+    roles: ["in", "in", "in", "out", "in", "in", "out", "gnd", "out", "in", "in", "out", "in", "in", "in", "vcc"],
+    names: ["S", "1I0", "1I1", "1Y", "2I0", "2I1", "2Y", "", "3Y", "3I1", "3I0", "4Y", "4I1", "4I0", "E̅", ""],
+    io: { inputs: [15, 1, 2, 3, 5, 6, 11, 10, 14, 13], outputs: [4, 7, 9, 12] },
+    room: 800,
+    kit: [
+      { part: "chip", func: "mux", count: 4 },
+      { part: "chip", func: "and", count: 4 },
+      { part: "chip", func: "not", count: 1 },
+    ],
+    recipe: {
+      parts: [
+        ...[0, 1, 2, 3].map((i) => ic(`M${1 + i}`, "mux", 6, "D", 2 + 4 * i)),
+        ...[0, 1, 2, 3].map((i) => sot(`A${1 + i}`, "and", "H", 2 + 4 * i)),
+        sot("N", "not", "H", 18),
+      ],
+      nets: [
+        ...power("P16", "P8", [...["M1", "M2", "M3", "M4"].map((id) => ({ id, vcc: 5, gnd: 2 })), ...gates("A1", "A2", "A3", "A4", "N")]),
+        ["P1", "M1.6", "M2.6", "M3.6", "M4.6"],
+        ["P15", "N.2"],
+        ["N.4", "A1.2", "A2.2", "A3.2", "A4.2"],
+        // Канал k: I0, I1, выход Y
+        ...[[2, 3, 4], [5, 6, 7], [11, 10, 9], [14, 13, 12]].flatMap(([i0, i1, y], k) => [[`P${i0}`, `M${k + 1}.3`], [`P${i1}`, `M${k + 1}.1`], [`M${k + 1}.4`, `A${k + 1}.1`], [`A${k + 1}.4`, `P${y}`]]),
+      ],
+    },
+  },
+  {
+    id: "cnt1",
+    func: "cnt1",
+    part: "РАЗРЯД СЧЁТЧИКА",
+    intermediate: true,
+    title: "Разряд синхронного счётчика",
+    about: `Один бит счётчика, у которого все разряды переключаются по одному общему такту. По фронту CLK: при LOAD̅ = 0 запоминает вход P; иначе, если ENP = 1 и T = 1, меняет Q на противоположное; иначе хранит. CLR̅ = 0 сразу даёт Q = 0, без такта. Выход TC = 1, когда T = 1 и Q = 1: его подают на T следующего разряда. Выводы: 1 CLK, 2 CLR̅, 3 LOAD̅, 4 P, 5 ENP, 6 T, 7 GND, 8 TC, 9 Q, 10–13 не подключены, 14 VCC. Проверяется последовательностью шагов. ${STEP}`,
+    hints: [
+      "Бит хранит D-триггер со сбросом. Что должно оказаться на его входе D к фронту — в каждом из трёх случаев?",
+      "«Поменять на противоположное или оставить» — это одна операция над Q и условием. А выбрать между двумя сигналами по LOAD̅ — какая открытая микросхема умеет?",
+    ],
+    package: "DIP",
+    roles: ["in", "in", "in", "in", "in", "in", "gnd", "out", "out", "nc", "nc", "nc", "nc", "vcc"],
+    names: ["CLK", "CLR̅", "LOAD̅", "P", "ENP", "T", "", "TC", "Q", "", "", "", "", ""],
+    io: { inputs: [1, 2, 3, 4, 5, 6], outputs: [9, 8] },
+    room: 600,
+    // CLK CLR̅ LOAD̅ P ENP T
+    sequence: seq(
+      "000000", "010000", "010100", "110100",
+      "011001", "111001", "011011", "111011", "011011", "111011",
+      "011010", "111010", "001010", "011011", "111011",
+      "010111", "110111", "010011", "110011", "011011",
+    ),
+    kit: [
+      { part: "chip", func: "dffr", count: 1 },
+      { part: "chip", func: "mux", count: 1 },
+      { part: "chip", func: "xor", count: 1 },
+      { part: "chip", func: "and", count: 2 },
+    ],
+    recipe: {
+      parts: [ic("F", "dffr", 6, "D", 2), ic("M", "mux", 6, "D", 6), sot("X", "xor", "D", 10), sot("A1", "and", "H", 2), sot("A2", "and", "H", 6)],
+      nets: [
+        ...power("P14", "P7", [{ id: "F", vcc: 5, gnd: 2 }, { id: "M", vcc: 5, gnd: 2 }, ...gates("X", "A1", "A2")]),
+        ["P1", "F.1"],
+        ["P2", "F.6"],
+        // LOAD̅ = 0 — на D идёт P (I0), LOAD̅ = 1 — Q, изменённое, если разрешён счёт (I1)
+        ["P3", "M.6"],
+        ["P4", "M.3"],
+        ["P5", "A1.1"],
+        ["P6", "A1.2", "A2.1"],
+        ["A1.4", "X.2"],
+        ["F.4", "X.1", "A2.2", "P9"],
+        ["X.4", "M.1"],
+        ["M.4", "F.3"],
+        ["A2.4", "P8"],
+      ],
+    },
+  },
+  {
+    id: "hc161",
+    func: "cnt161",
+    part: "74HC161",
+    title: "Синхронный счётчик 4 бит",
+    about:
+      "Настоящая микросхема: четырёхразрядный двоичный счётчик, все разряды переключаются по одному фронту CLK. По фронту: при LOAD̅ = 0 загружает число с входов A…D; иначе при ENP = 1 и ENT = 1 прибавляет единицу (после 15 — 0); иначе хранит. CLR̅ = 0 обнуляет сразу, без такта. RCO = 1, когда насчитано 15 и ENT = 1, — для цепочки счётчиков. Такой счётчик — счётчик команд процессора: считает по порядку, а загрузка — это переход. Выводы — как у SN74HC161 (TI SCLS297D): 1 CLR̅, 2 CLK, 3 A, 4 B, 5 C, 6 D, 7 ENP, 8 GND, 9 LOAD̅, 10 ENT, 11 QD, 12 QC, 13 QB, 14 QA, 15 RCO, 16 VCC. Проверяется последовательностью шагов.",
+    hints: [
+      "Разряд уже умеет всё сам — остаётся связать четыре. Когда должен переключаться второй разряд, когда третий?",
+      "RCO зависит от ENT, но не от ENP. Откуда тогда начинать цепочку переносов?",
+    ],
+    package: "DIP",
+    roles: ["in", "in", "in", "in", "in", "in", "in", "gnd", "in", "in", "out", "out", "out", "out", "out", "vcc"],
+    names: ["CLR̅", "CLK", "A", "B", "C", "D", "ENP", "", "LOAD̅", "ENT", "QD", "QC", "QB", "QA", "RCO", ""],
+    io: { inputs: [2, 1, 9, 7, 10, 3, 4, 5, 6], outputs: [14, 13, 12, 11, 15] },
+    room: 1200,
+    // CLK CLR̅ LOAD̅ ENP ENT A B C D
+    sequence: seq(
+      "000000000", "011110000",
+      ...Array.from({ length: 15 }, () => ["111110000", "011110000"]).flat(),
+      "011100000", "111100000", "011110000", "111110000", "011110000",
+      "010110000", "110110000", "011110000", "111110000",
+      "010111010", "110111010", "011111010",
+      "000110000", "011110000", "111110000", "011110000",
+    ),
+    kit: [{ part: "chip", func: "cnt1", count: 4 }],
+    recipe: {
+      parts: [0, 1, 2, 3].map((i) => ic(`D${1 + i}`, "cnt1", 14, "D", 2 + 8 * i)),
+      nets: [
+        ...power("P16", "P8", [0, 1, 2, 3].map((i) => ({ id: `D${1 + i}`, vcc: 14, gnd: 7 }))),
+        ["P2", "D1.1", "D2.1", "D3.1", "D4.1"],
+        ["P1", "D1.2", "D2.2", "D3.2", "D4.2"],
+        ["P9", "D1.3", "D2.3", "D3.3", "D4.3"],
+        ["P7", "D1.5", "D2.5", "D3.5", "D4.5"],
+        // Перенос: T первого — ENT, дальше TC предыдущего; TC последнего — RCO
+        ["P10", "D1.6"],
+        ["D1.8", "D2.6"],
+        ["D2.8", "D3.6"],
+        ["D3.8", "D4.6"],
+        ["D4.8", "P15"],
+        ...[[3, 14], [4, 13], [5, 12], [6, 11]].flatMap(([p, q], k) => [[`P${p}`, `D${k + 1}.4`], [`D${k + 1}.9`, `P${q}`]]),
+      ],
+    },
+  },
+  {
+    id: "hc173",
+    func: "reg173",
+    part: "74HC173",
+    title: "Регистр 4 бит на шину",
+    about:
+      "Настоящая микросхема: четыре D-триггера с общим тактом CP. По фронту CP запоминает D0…D3, но только если оба входа разрешения записи E̅1 и E̅2 в нуле; иначе хранит, сколько бы тактов ни пришло. MR = 1 обнуляет сразу. Выходы Q0…Q3 отключаются (третье состояние), если хоть один из OE̅1, OE̅2 в единице; запоминать регистр при этом продолжает. Так устроены регистры процессора, сидящие на общей шине. Выводы — как у 74HC173 (Nexperia, ред. 5): 1 OE̅1, 2 OE̅2, 3 Q0, 4 Q1, 5 Q2, 6 Q3, 7 CP, 8 GND, 9 E̅1, 10 E̅2, 11 D3, 12 D2, 13 D1, 14 D0, 15 MR, 16 VCC. Проверяется последовательностью шагов.",
+    hints: [
+      "Такт приходит всегда, а записывать нужно не всегда. Что подать на вход триггера, чтобы после фронта в нём осталось прежнее?",
+      "Сброс у триггеров — активный ноль, а у MR — единица. И два разрешения каждый раз работают как одно — какое условие их объединяет?",
+    ],
+    package: "DIP",
+    roles: ["in", "in", "out", "out", "out", "out", "in", "gnd", "in", "in", "in", "in", "in", "in", "in", "vcc"],
+    names: ["OE̅1", "OE̅2", "Q0", "Q1", "Q2", "Q3", "CP", "", "E̅1", "E̅2", "D3", "D2", "D1", "D0", "MR", ""],
+    io: { inputs: [7, 15, 9, 10, 1, 2, 14, 13, 12, 11], outputs: [3, 4, 5, 6] },
+    room: 1200,
+    // CP MR E̅1 E̅2 OE̅1 OE̅2 D0…D3
+    sequence: seq(
+      "0100000000", "0000001010", "1000001010",
+      "0010000110", "1010000110", "0001000110", "1001000110", "0000000110", "1000000110",
+      "0000100110", "0000010001", "1000010001", "0000000001",
+      "0100000001", "0000001111", "1000001111", "0100001111",
+    ),
+    kit: [
+      { part: "chip", func: "dffr", count: 4 },
+      { part: "chip", func: "mux4q", count: 1 },
+      { part: "chip", func: "or", count: 2 },
+      { part: "chip", func: "not", count: 1 },
+      { part: "chip", func: "tbuf4", count: 1 },
+    ],
+    recipe: {
+      parts: [
+        ic("MX", "mux4q", 16, "D", 2),
+        ic("B", "tbuf4", 14, "D", 11),
+        ...[0, 1, 2, 3].map((i) => ic(`F${1 + i}`, "dffr", 6, "D", 19 + 4 * i)),
+        sot("O1", "or", "H", 2),
+        sot("O2", "or", "H", 6),
+        sot("N", "not", "H", 10),
+      ],
+      nets: [
+        ...power("P16", "P8", [{ id: "MX", vcc: 16, gnd: 8 }, { id: "B", vcc: 14, gnd: 7 }, ...["F1", "F2", "F3", "F4"].map((id) => ({ id, vcc: 5, gnd: 2 })), ...gates("O1", "O2", "N")]),
+        // E̅ мультиплексора — к общему: он всегда включён
+        ["P8", "MX.15"],
+        ["P7", "F1.1", "F2.1", "F3.1", "F4.1"],
+        ["P15", "N.2"],
+        ["N.4", "F1.6", "F2.6", "F3.6", "F4.6"],
+        // Запись запрещена (E̅1 или E̅2) — мультиплексор возвращает Q на D
+        ["P9", "O1.1"],
+        ["P10", "O1.2"],
+        ["O1.4", "MX.1"],
+        ["P1", "O2.1"],
+        ["P2", "O2.2"],
+        ["O2.4", "B.1", "B.4", "B.10", "B.13"],
+        // Бит k: D — вывод 14 − k, каналы 157 (I0, I1, Y), буфер 125 (A, Y), выход — вывод 3 + k
+        ...[0, 1, 2, 3].flatMap((k) => {
+          const [i0, i1, y] = [[2, 3, 4], [5, 6, 7], [11, 10, 9], [14, 13, 12]][k];
+          const [a, by] = [[2, 3], [5, 6], [9, 8], [12, 11]][k];
+          const f = `F${k + 1}`;
+          return [[`P${14 - k}`, `MX.${i0}`], [`MX.${y}`, `${f}.3`], [`${f}.4`, `MX.${i1}`, `B.${a}`], [`B.${by}`, `P${3 + k}`]];
+        }),
+      ],
+    },
+  },
   // ─── Числа: разряд компаратора → 74HC85; 74HC595; проект АЛУ ─────────────────────────────
   {
     id: "mag1",
@@ -2663,6 +2879,10 @@ export const FUNC_NAMES: Record<LogicFunc, string> = {
   tbuf4: "Четыре буфера с тремя состояниями",
   buf8z: "Восемь буферов с тремя состояниями",
   reg8z: "Восьмиразрядный регистр",
+  mux4q: "Четыре мультиплексора 2→1",
+  cnt1: "Разряд синхронного счётчика",
+  cnt161: "Синхронный счётчик 4 бит",
+  reg173: "Регистр 4 бит с тремя состояниями",
   timer: "Таймер 555",
   mag1: "Разряд компаратора",
   mag4: "Компаратор чисел 4 бит",
