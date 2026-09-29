@@ -84,20 +84,6 @@ const PLACE: Record<string, [number, number]> = {
   "intro-switch": [0, 4],
   "intro-scope": [0, 5],
   parts: [1, 2.5],
-  "nand-cmos": [2, 0],
-  "not-cmos": [2, 1.5],
-  "nor-cmos": [2, 3],
-  xor: [3, 0],
-  and: [3, 1.5],
-  or: [3, 3],
-  buf: [3, 4.5],
-  xnor: [4, 0],
-  half: [4, 3.5],
-  mux: [4, 5],
-  hc7266: [5, 1],
-  full: [5, 3.5],
-  eq2: [6, 1],
-  hc283: [6, 3.5],
   "fix-led-open": [0, 10.5],
   "fix-led-dim": [1, 10.5],
   "fix-divider": [2, 10.5],
@@ -111,58 +97,89 @@ const PLACE: Record<string, [number, number]> = {
   "fix-soic-bridge": [9, 11.5],
   "fix-display": [10, 11.5],
   "fix-555": [10, 12.5],
-  schmitt: [5, 5.5],
-  osc: [6, 5.5],
-  dlatchr: [6, 8.7],
-  dffr: [7, 9],
-  sreg8: [8, 8.4],
-  tffr: [8, 9.4],
-  cnt393: [9, 9.4],
-  div2: [7, 7],
-  cnt4: [8, 7],
-  sreg4: [7, 8],
-  sr: [4, 7.5],
-  dlatch: [5, 7.5],
-  dff: [6, 7.5],
-  dec2: [2, 9],
-  hc138: [3, 9],
-  seg7: [4, 9],
-  hc4511: [5, 9],
-  rcdb: [7, 5.5],
-  max6816: [8, 5.5],
-  lmv331: [7, 1],
-  lm393: [8, 1],
-  ne555: [9, 1],
-  mag1: [7, 2.3],
-  hc85: [8, 2.3],
-  alu4: [7, 3.5],
-  hc595: [9, 8.4],
-  lm321: [7, 0],
-  lm358: [8, 0],
-  vref: [7, 4.5],
-  tbuf: [2, 5],
-  hc125: [3, 6],
-  hc244: [4, 6.25],
-  hc574: [9, 7],
-  johnson: [10, 8.4],
-  hc4017: [10, 9.4],
-  "proj-lights": [11, 9.4],
-  "proj-hyst": [9, 0],
-  "proj-sar": [11, 4.5],
-  lm78l05: [8, 4.5],
-  "proj-dac": [10, 1],
-  "proj-adc": [10, 4.5],
-  "proj-stopwatch": [10, 2.5],
-  "proj-counter": [10, 6.5],
+  "nand-cmos": [2, 0],
+  "not-cmos": [2, 1.5],
+  "nor-cmos": [2, 3],
+  lm393: [2, 5],
+  lm358: [2, 6.5],
+  xor: [3, 0],
+  and: [3, 1.5],
+  or: [3, 3],
+  buf: [3, 4.5],
+  lm78l05: [3, 6.5],
+  hc7266: [4, 0],
+  hc283: [4, 1.2],
+  hc85: [4, 2.4],
+  mux: [4, 3.6],
+  hc138: [4, 4.8],
+  schmitt: [4, 6],
+  hc244: [4, 7.2],
+  dff: [4, 8.4],
+  ne555: [5, 1.2],
+  hc4511: [5, 4.8],
+  hc574: [5, 7.2],
+  dffr: [5, 8.4],
+  cnt4: [5, 9.6],
+  sreg8: [6, 8.4],
+  cnt393: [6, 9.6],
+  max6816: [7, 6],
+  hc595: [7, 7.8],
+  hc4017: [7, 9],
+  "proj-hyst": [8, 1.2],
+  "proj-adc": [8, 3.6],
+  "proj-stopwatch": [8, 4.8],
+  "proj-counter": [8, 6],
+  "proj-dac": [8, 7.8],
+  "proj-lights": [8, 9],
+  "proj-sar": [9, 3.6],
 };
 /**
- * Уровни с одной функцией (И-НЕ на КМОП и на РТЛ, XNOR тремя способами…) — один узел карты:
- * смысл у них один, а стрелок от двух-трёх узлов вдвое-втрое больше. Узел стоит там, где первый уровень группы.
+ * Узлы карты — группы уровней, иначе стрелок не разобрать:
+ * - варианты одного компонента (И-НЕ на КМОП и на РТЛ, XNOR тремя способами…);
+ * - цепочки, где учебные ступеньки ведут к настоящей микросхеме (полусумматор → сумматор → 74HC283),
+ *   одиночный корпус — к сдвоенному (LM321 → LM358), и задачки, где открытое тут же применяют (АЛУ после 74HC283).
+ * Цепочка перечислена по первому уровню каждого шага; варианты шага подтягиваются сами.
  */
-const GROUPS: Level[][] = [...new Set(LEVELS.map((l) => l.func))].map((f) => LEVELS.filter((l) => l.func === f));
-const groupOf = (id: string): Level[] | undefined => GROUPS.find((g) => g.some((l) => l.id === id));
-/** Узел карты для функции. */
-const headOf = (f: LogicFunc): string => GROUPS.find((g) => g[0].func === f)![0].id;
+const CHAINS: string[][] = [
+  ["xnor", "hc7266", "eq2"],
+  ["half", "full", "hc283", "alu4"],
+  ["sr", "dlatch", "dff", "sreg4"],
+  ["div2", "cnt4"],
+  ["dlatchr", "dffr"],
+  ["tffr", "cnt393"],
+  ["dec2", "hc138"],
+  ["seg7", "hc4511"],
+  ["schmitt", "osc"],
+  ["rcdb", "max6816"],
+  ["lmv331", "lm393"],
+  ["lm321", "lm358"],
+  ["vref", "lm78l05"],
+  ["johnson", "hc4017"],
+  ["mag1", "hc85"],
+  ["tbuf", "hc125", "hc244"],
+];
+interface Group {
+  /** Уровень, чьё имя у узла и чьё место на карте: последняя настоящая микросхема цепочки. */
+  head: Level;
+  levels: Level[];
+  /** Цепочка (иначе — только варианты одного компонента). */
+  chain: boolean;
+}
+const byFunc = (f: LogicFunc) => LEVELS.filter((l) => l.func === f);
+const GROUPS: Group[] = (() => {
+  const chained = new Set(CHAINS.flat().map((id) => LEVELS.find((l) => l.id === id)!.func));
+  const chains = CHAINS.map((ids) => {
+    const levels = ids.flatMap((id) => byFunc(LEVELS.find((l) => l.id === id)!.func));
+    return { head: [...levels].reverse().find((l) => !l.intermediate) ?? levels.at(-1)!, levels, chain: true };
+  });
+  const single = [...new Set(LEVELS.map((l) => l.func))].filter((f) => !chained.has(f)).map((f) => ({ head: byFunc(f)[0], levels: byFunc(f), chain: false }));
+  return [...single, ...chains];
+})();
+const groupOf = (id: string): Group | undefined => GROUPS.find((g) => g.levels.some((l) => l.id === id));
+/** Узел карты, где собирается функция. */
+const headOf = (f: LogicFunc): string => GROUPS.find((g) => g.levels.some((l) => l.func === f))!.head.id;
+/** Группа открыта: собран её главный уровень (для вариантов — любой из них). */
+const groupDone = (g: Group) => byFunc(g.head.func).some((l) => isDone(l.id));
 /** Короткие подписи уроков на карте. */
 const SHORT: Record<string, string> = {
   "intro-led": "зажечь светодиод",
@@ -190,12 +207,19 @@ function nodeSub(l: Level): string {
   return full.length > 27 ? variant(l) : full;
 }
 
-/** Подпись группы: функция и варианты («И-НЕ · КМОП, РТЛ»), не влезают — их число. */
-function groupSub(g: Level[]): string {
-  if (g.length === 1) return nodeSub(g[0]);
-  const name = FUNC_SHORT[g[0].func] ?? FUNC_NAMES[g[0].func];
-  const full = `${name} · ${g.map(variant).join(", ")}`;
-  return full.length > 27 ? `${name} · ${plural(g.length, "вариант", "варианта", "вариантов")}` : full;
+/** Подпись группы: функция и варианты («И-НЕ · КМОП, РТЛ») или число уровней цепочки; не влезают — их число. */
+function groupSub(g: Group): string {
+  const n = g.levels.length;
+  if (n === 1) return nodeSub(g.head);
+  const name = FUNC_SHORT[g.head.func] ?? FUNC_NAMES[g.head.func];
+  const count = g.chain ? plural(n, "уровень", "уровня", "уровней") : plural(n, "вариант", "варианта", "вариантов");
+  const full = g.chain ? `${name} · ${count}` : `${name} · ${g.levels.map(variant).join(", ")}`;
+  return full.length > 27 ? count : full;
+}
+/** Имя уровня на вкладке группы: у вариантов — способ сборки, в цепочке — название (и способ, если их несколько). */
+function tabLabel(g: Group, l: Level): string {
+  if (!g.chain) return variant(l);
+  return g.levels.filter((x) => x.func === l.func).length > 1 ? `${l.part} · ${variant(l)}` : l.part;
 }
 
 export class CareerMap {
@@ -212,9 +236,9 @@ export class CareerMap {
       const t = e.target as HTMLElement;
       const node = t.closest<SVGGElement>("[data-node]")?.dataset.node;
       if (node && node !== "parts") {
-        // Группа: остаёмся на выбранном варианте, иначе — первый, который можно собрать
+        // Группа: остаёмся на выбранном уровне, иначе — первый, который можно собрать, или первый не пройденный
         const g = groupOf(node);
-        this.chosen = !g ? node : g.some((l) => l.id === this.chosen) ? this.chosen : (g.find((l) => !isDone(l.id) && !missing(l).length) ?? g[0]).id;
+        this.chosen = !g ? node : g.levels.some((l) => l.id === this.chosen) ? this.chosen : (g.levels.find((l) => !isDone(l.id) && !missing(l).length) ?? g.levels.find((l) => !isDone(l.id)) ?? g.head).id;
         return this.render();
       }
       const v = t.closest<HTMLElement>("[data-variant]")?.dataset.variant;
@@ -269,21 +293,23 @@ export class CareerMap {
     // Ремонт — отдельной цепочкой после уроков про приборы (рекомендовано, не обязательно)
     edge(LESSONS.at(-1)!.id, REPAIRS[0].id, isDone(LESSONS.at(-1)!.id));
     REPAIRS.slice(1).forEach((r, i) => edge(REPAIRS[i].id, r.id, isDone(REPAIRS[i].id)));
-    // Между группами: одна стрелка на пару, сколько бы вариантов ни было с обеих сторон
-    const groupDone = (g: Level[]) => g.some((l) => isDone(l.id));
+    // Между группами: одна стрелка на пару, сколько бы уровней ни было с обеих сторон; внутри цепочки стрелок нет.
+    // Горит, если собрано хоть что-то из того, что берётся из группы-источника.
+    const funcDone = (f: LogicFunc) => byFunc(f).some((l) => isDone(l.id));
+    const link = (to: string, funcs: LogicFunc[], skip: (src: string) => boolean = () => false) => {
+      const lit = new Map<string, boolean>();
+      for (const f of funcs) {
+        const src = headOf(f);
+        if (src !== to && !skip(src)) lit.set(src, (lit.get(src) ?? false) || funcDone(f));
+      }
+      for (const [src, on] of lit) edge(src, to, on);
+    };
     for (const g of GROUPS) {
-      const from = new Set(g.flatMap((l) => (needs(l).length ? needs(l).map(headOf) : ["parts"])));
-      for (const src of from) edge(src, g[0].id, src === "parts" || groupDone(groupOf(src)!));
+      if (g.levels.some((l) => !needs(l).length)) edge("parts", g.head.id, true);
+      link(g.head.id, g.levels.flatMap(needs));
     }
     // Проекты: от микросхем набора (базовые вентили слева не тянем через всю карту)
-    for (const pr of PROJECTS) {
-      const from = new Set(pr.kit.flatMap((k) => (k.part === "chip" ? [headOf(k.func)] : [])));
-      for (const src of from) {
-        const g = groupOf(src)!;
-        if (g.every((x) => x.intermediate) || PLACE[src][0] < 5) continue;
-        edge(src, pr.id, groupDone(g));
-      }
-    }
+    for (const pr of PROJECTS) link(pr.id, pr.kit.flatMap((k) => (k.part === "chip" ? [k.func] : [])), (src) => PLACE[src][0] < 4);
     const nodes = [
       `<g class="node done root" data-node="parts" transform="translate(${at("parts").x} ${at("parts").y})"><rect width="${W}" height="${H}" rx="10"/><text x="14" y="27" class="t">Детали</text><text x="14" y="47" class="s">транзисторы и резисторы</text></g>`,
       ...LESSONS.map((l, i) => {
@@ -309,16 +335,18 @@ export class CareerMap {
           <text x="14" y="47" class="s">${esc(l.title)}</text></g>`;
       }),
       ...GROUPS.map((g) => {
-        const l = g[0], p = at(l.id);
-        const done = g.filter((x) => isDone(x.id)).length;
-        const state = done ? "done" : g.every((x) => missing(x).length) ? "locked" : "open";
+        const l = g.head, p = at(l.id), n = g.levels.length;
+        const done = g.levels.filter((x) => isDone(x.id)).length;
+        const state = groupDone(g) ? "done" : g.levels.every((x) => isDone(x.id) || missing(x).length) ? "locked" : "open";
         // Задачи: ★ — все выполнены, ☆ — есть невыполненные
-        const goals = g.flatMap((x) => (x.goals ?? []).map((q) => goalMet(q, bestOf(x.id))));
+        const goals = g.levels.flatMap((x) => (x.goals ?? []).map((q) => goalMet(q, bestOf(x.id))));
         const star = goals.length ? (goals.every(Boolean) ? " ★" : " ☆") : "";
-        const mark = state === "done" ? (g.length > 1 && done < g.length ? ` ✓ ${done}/${g.length}` : " ✓") : state === "locked" ? " 🔒" : "";
-        const chosen = g.some((x) => x.id === this.chosen);
-        return `<g class="node ${state}${g.every((x) => x.intermediate) ? " step" : ""}${g.length > 1 ? " group" : ""}${chosen ? " chosen" : ""}" data-node="${l.id}" transform="translate(${p.x} ${p.y})" tabindex="0" role="button" aria-label="${esc(l.part)}">
-          ${g.length > 1 ? `<rect class="stack" x="5" y="-5" width="${W}" height="${H}" rx="10"/>` : ""}<rect width="${W}" height="${H}" rx="10"/>
+        // Сколько уровней группы пройдено, если не все
+        const part = n > 1 && done && done < n ? ` ${done}/${n}` : "";
+        const mark = (state === "done" ? " ✓" : state === "locked" ? " 🔒" : "") + part;
+        const chosen = g.levels.some((x) => x.id === this.chosen);
+        return `<g class="node ${state}${g.levels.every((x) => x.intermediate) ? " step" : ""}${n > 1 ? " group" : ""}${chosen ? " chosen" : ""}" data-node="${l.id}" transform="translate(${p.x} ${p.y})" tabindex="0" role="button" aria-label="${esc(l.part)}">
+          ${n > 1 ? `<rect class="stack" x="5" y="-5" width="${W}" height="${H}" rx="10"/>` : ""}<rect width="${W}" height="${H}" rx="10"/>
           <text x="14" y="27" class="t">${esc(l.part)}${mark}${star}</text>
           <text x="14" y="47" class="s">${esc(groupSub(g))}</text></g>`;
       }),
@@ -369,8 +397,8 @@ export class CareerMap {
       : `<div class="row"><button class="btn inline primary" data-map="start">${started ? "Продолжить" : isDone(l.id) ? "Собрать ещё раз" : "Собрать"}</button>
          ${started ? `<button class="btn inline" data-map="restart">Начать заново</button>` : ""}</div>`;
     const group = groupOf(l.id)!;
-    const tabs = group.length > 1
-      ? `<div class="variants" role="tablist">${group.map((x) => `<button class="btn inline${x === l ? " primary" : ""}" role="tab" aria-selected="${x === l}" data-variant="${x.id}">${esc(variant(x))}${isDone(x.id) ? " ✓" : missing(x).length ? " 🔒" : ""}</button>`).join("")}</div>`
+    const tabs = group.levels.length > 1
+      ? `<div class="variants" role="tablist">${group.levels.map((x) => `<button class="btn inline${x === l ? " primary" : ""}" role="tab" aria-selected="${x === l}" data-variant="${x.id}">${esc(tabLabel(group, x))}${isDone(x.id) ? " ✓" : missing(x).length ? " 🔒" : ""}</button>`).join("")}</div>`
       : "";
     return `${tabs}<div class="eyebrow">${esc(FUNC_NAMES[l.func])} · ${variant(l)}</div>
       <h3>${esc(l.part)}${isDone(l.id) ? " ✓" : ""}</h3>
