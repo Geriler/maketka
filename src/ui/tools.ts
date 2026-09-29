@@ -104,9 +104,26 @@ export function renderToolButtons(tools: HTMLElement): void {
     showChipTab(chipBody, names.includes(chipTab) ? chipTab : names[0]);
     if (!(chipBody as HTMLElement).dataset.tabsBound) {
       (chipBody as HTMLElement).dataset.tabsBound = "1";
+      // Список выпадает от кнопки группы и мог уйти за нижний край окна: высота — до края, дальше прокрутка
+      // Не помещается вниз — список поднимается вверх, насколько позволяет окно
+      const fit = () => {
+        const el = chipBody as HTMLElement;
+        el.style.removeProperty("max-height");
+        el.style.removeProperty("top");
+        if (getComputedStyle(el).position === "fixed") return;
+        const box = el.getBoundingClientRect();
+        const lift = Math.max(0, Math.min(box.bottom - (window.innerHeight - 12), box.top - 12));
+        if (lift) el.style.top = `${parseFloat(getComputedStyle(el).top) - lift}px`;
+        el.style.maxHeight = `${Math.max(160, window.innerHeight - (box.top - lift) - 12)}px`;
+      };
+      chipBody.closest("details")?.addEventListener("toggle", fit);
+      window.addEventListener("resize", fit);
       chipBody.addEventListener("click", (e) => {
         const tab = (e.target as HTMLElement).closest<HTMLElement>("[data-chip-tab]");
-        if (tab) showChipTab(chipBody, tab.dataset.chipTab!);
+        if (tab) {
+          showChipTab(chipBody, tab.dataset.chipTab!);
+          fit();
+        }
       });
     }
   }
