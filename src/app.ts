@@ -60,10 +60,10 @@ import { loadLibrary, saveLibrary } from "./chips/library";
 import { caseOf, chipInner, dipSize, packageChip, packageProblems, spaceUsed } from "./chips/package";
 import { chipsUsed, libraryChips, referenceList, resolveChip, setCareerChips, setChipToolSource, setLibrary, setReference } from "./chips/registry";
 import { checkLevel, levelScene, publicChips, referenceChips, type CheckResult } from "./career/build";
-import { levelById, type Level } from "./career/levels";
+import { goalMet, levelById, type Level } from "./career/levels";
 import type { Lesson } from "./career/lessons";
 import { stageById } from "./career/repairs";
-import { activeLesson, activeLevel, careerDefs, isDone, passLesson, kitTools, loadSlot, missing, recordFail, recordMetrics, revealHint, saveSlot, slotOf, toolAllowed, unlock, workshopScene } from "./career/session";
+import { activeLesson, activeLevel, bestOf, careerDefs, isDone, passLesson, kitTools, loadSlot, missing, recordFail, recordMetrics, revealHint, saveSlot, slotOf, toolAllowed, unlock, workshopScene } from "./career/session";
 import { CareerMap, MenuScreen } from "./ui/screens";
 import { CareerPanel } from "./ui/career";
 import { countParts } from "./chips/count";
@@ -1272,7 +1272,10 @@ export class App {
     if (this.lastCheck.ok && this.lastCheck.def) {
       const first = !careerDefs().some((d) => d.id === this.lastCheck!.def!.id);
       if (!unlock(this.lastCheck.def, level.id)) this.toast("Прогресс не сохранился", "Хранилище браузера недоступно: открытое пропадёт после перезагрузки.");
+      const metBefore = (level.goals ?? []).filter((g) => goalMet(g, bestOf(level.id)));
       if (this.lastCheck.metrics) this.lastCheck.better = recordMetrics(level.id, this.lastCheck.metrics);
+      const fresh = (level.goals ?? []).filter((g) => !metBefore.includes(g) && goalMet(g, bestOf(level.id)));
+      if (fresh.length) this.toast("Задача выполнена ★", fresh.map((g) => g.text).join("; "));
       setCareerChips(careerDefs());
       this.applyMode();
       this.toast(first ? `Открыт ${level.part}!` : `${level.part} обновлён`, `${level.sequence ? "Все шаги проверки сошлись" : "Таблица истинности сошлась"}. Внутри — ваша сборка; ${level.intermediate ? "учебная ступенька попадёт только в набор следующего уровня." : "компонент появится в мастерской и в наборах следующих уровней."}`);

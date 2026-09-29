@@ -2,7 +2,7 @@
 
 import { CHECK_VOLTS, kitUsed, rowText, type CheckResult, type Metrics } from "../career/build";
 import { formatOhms, formatSI } from "../sim/resistorCodes";
-import { FUNC_NAMES, LEVELS, gateIo, kitLabel, smdKitLabel, type Level } from "../career/levels";
+import { FUNC_NAMES, LEVELS, gateIo, goalMet, kitLabel, smdKitLabel, type Level } from "../career/levels";
 import { caseOf } from "../chips/package";
 import { HINT_AFTER, bestOf, failsOf, hintsOf, isDone } from "../career/session";
 import type { Lesson } from "../career/lessons";
@@ -132,6 +132,7 @@ export class CareerPanel {
       ? check.ok
         ? `<p class="sub"><b>Работает!</b> ${esc(level.part)} открыт: теперь он в группе «Набор» уровней, где нужен, и остаётся вашим — внутри ваша сборка.</p>
           <div class="eyebrow">цифры сборки</div>${metricsHtml(check.metrics, bestOf(level.id), check.better)}
+          ${level.goals ? `<div class="eyebrow">задачи (необязательные)</div><ul class="list steps">${level.goals.map((g) => `<li><span>${esc(g.text)}${goalMet(g, bestOf(level.id)) && !goalMet(g, check.metrics) ? " (уже выполнена раньше)" : ""}</span><span class="${goalMet(g, check.metrics) ? "ok" : "bad"}">${goalMet(g, check.metrics) ? "✓" : "✗"}</span></li>`).join("")}</ul>` : ""}
           <p class="sub">Меньше — лучше. Площадь — прямоугольник, в который помещается всё на поле корпуса; соединения — провода и дорожки внутри. Ток покоя и число транзисторов показывают разницу между КМОП и РТЛ. «Работает от» — наименьшее питание из 5; 4; 3,3; 2,5 и 2 В, при котором таблица ещё сходится (настоящие 74LVC — от 1,65 В). Выходное сопротивление — насколько твёрдо выход держит уровень под нагрузкой: чем меньше, тем больше входов он потянет.</p>`
         : check.problems.map((t) => `<p class="sub bad">${esc(t)}</p>`).join("") +
           (check.diagnosis?.length ? `<div class="eyebrow">что проверить</div><ul class="kitlist">${check.diagnosis.map((t) => `<li>${esc(t)}</li>`).join("")}</ul>` : "")

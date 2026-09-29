@@ -6,7 +6,7 @@
 import { LESSONS, type Lesson } from "../career/lessons";
 import { REPAIRS, stageById } from "../career/repairs";
 import { PROJECTS } from "../career/projects";
-import { FUNC_NAMES, LEVELS, gateIo, kitLabel, type Level, type LogicFunc } from "../career/levels";
+import { FUNC_NAMES, LEVELS, gateIo, goalMet, kitLabel, type Level, type LogicFunc } from "../career/levels";
 import { bestOf, isDone, loadSlot, missing } from "../career/session";
 import { metricsHtml } from "./career";
 import { PIN_ROLES } from "../chips/roles";
@@ -153,6 +153,7 @@ const PLACE: Record<string, [number, number]> = {
   hc4017: [10, 9.4],
   "proj-lights": [11, 9.4],
   "proj-hyst": [9, 0],
+  "proj-sar": [11, 4.5],
   lm78l05: [8, 4.5],
   "proj-dac": [10, 1],
   "proj-adc": [10, 4.5],
@@ -287,16 +288,18 @@ export class CareerMap {
       ...LEVELS.map((l) => {
         const p = at(l.id);
         const state = isDone(l.id) ? "done" : missing(l).length ? "locked" : "open";
+        // Задачи: ★ — все выполнены, ☆ — есть невыполненные
+        const goals = l.goals ? (l.goals.every((g) => goalMet(g, bestOf(l.id))) ? " ★" : " ☆") : "";
         return `<g class="node ${state}${l.intermediate ? " step" : ""}${this.chosen === l.id ? " chosen" : ""}" data-node="${l.id}" transform="translate(${p.x} ${p.y})" tabindex="0" role="button" aria-label="${esc(l.part)}">
           <rect width="${W}" height="${H}" rx="10"/>
-          <text x="14" y="27" class="t">${esc(l.part)}${state === "done" ? " ✓" : state === "locked" ? " 🔒" : ""}</text>
+          <text x="14" y="27" class="t">${esc(l.part)}${state === "done" ? " ✓" : state === "locked" ? " 🔒" : ""}${goals}</text>
           <text x="14" y="47" class="s">${esc(nodeSub(l))}</text></g>`;
       }),
     ];
     const chosen = this.chosen ? LEVELS.find((l) => l.id === this.chosen) : undefined;
     const lesson = this.chosen ? stageById(this.chosen) : undefined;
     this.el.innerHTML = `<header class="map-head">
-        <div><div class="eyebrow">карьера</div><h2>Открыто ${done} из ${LEVELS.length} · уроков ${LESSONS.filter((l) => isDone(l.id)).length} из ${LESSONS.length} · ремонтов ${REPAIRS.filter((l) => isDone(l.id)).length} из ${REPAIRS.length} · проектов ${PROJECTS.filter((l) => isDone(l.id)).length} из ${PROJECTS.length}</h2></div>
+        <div><div class="eyebrow">карьера</div><h2>Открыто ${done} из ${LEVELS.length} · уроков ${LESSONS.filter((l) => isDone(l.id)).length} из ${LESSONS.length} · ремонтов ${REPAIRS.filter((l) => isDone(l.id)).length} из ${REPAIRS.length} · проектов ${PROJECTS.filter((l) => isDone(l.id)).length} из ${PROJECTS.length} · задач ${LEVELS.flatMap((l) => (l.goals ?? []).filter((g) => goalMet(g, bestOf(l.id)))).length} из ${LEVELS.flatMap((l) => l.goals ?? []).length}</h2></div>
         <div class="row">
           ${this.host.hasTable() ? `<button class="btn inline" data-map="close">К столу</button>` : ""}
           <button class="btn inline" data-map="workshop">Мастерская</button>
@@ -345,6 +348,7 @@ export class CareerMap {
       <div class="eyebrow">набор</div>
       <ul class="kitlist">${l.kit.map((k) => `<li>${esc(kitLabel(k))} × ${k.count}</li>`).join("")}</ul>
       ${bestOf(l.id) ? `<div class="eyebrow">лучшие цифры</div>${metricsHtml(undefined, bestOf(l.id))}` : ""}
+      ${l.goals ? `<div class="eyebrow">задачи (необязательные)</div><ul class="kitlist">${l.goals.map((g) => `<li>${goalMet(g, bestOf(l.id)) ? "✓" : "☐"} ${esc(g.text)}</li>`).join("")}</ul>` : ""}
       <div class="eyebrow">корпус ${packageName(l.package ?? "SOT-23-5", l.roles.length)}</div><p class="sub">${esc(pins)}; ${plural(io.inputs.length, "вход", "входа", "входов")}${io.outputs.length > 1 ? `, ${plural(io.outputs.length, "выход", "выхода", "выходов")}` : ""}.${l.sequence ? " С памятью: проверяется последовательностью шагов." : ""}${l.check === "sweep" ? " Проверяются ещё пороги: вход плавно растёт и падает." : l.check === "osc" ? " Проверка записывает выход 6 секунд, как осциллограф." : l.check === "bounce" ? " Проверка нажимает кнопку с дребезгом и следит, сколько раз переключится выход." : l.check === "compare" ? " Проверка подаёт на входы напряжения с разницей 50 мВ и 1 В." : l.check === "timer" ? " Проверка: таблица по шагам и работа генератором." : l.check === "opamp" ? " Проверка включает его повторителем и усилителем ×2, под нагрузкой и без обратной связи." : l.check === "regulator" ? " Проверка меняет входное напряжение и нагрузку и меряет выход и ток покоя." : ""}</p>
       ${buttons}`;
   }

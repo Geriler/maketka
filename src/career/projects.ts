@@ -238,6 +238,21 @@ export function hystRun(scene: Scene) {
   return { up, down, hi, lo, hurt: r.hurt };
 }
 
+/** АЦП последовательного приближения: вход — G2 (как у порога), индикатор; цифры для проверки. */
+export const SAR_POINTS = [1.0, 2.7, 0.5];
+
+/** На каждое напряжение — 1 с (преобразование идёт само, ≈ 0,4 с на одно), цифра на индикаторе. */
+export function sarRun(scene: Scene) {
+  const r = runner(scene);
+  const g2 = r.sim.scene.components.find((c) => c.id === "G2") as Extract<Component, { type: "psu" }> | undefined;
+  const rows = SAR_POINTS.map((vin) => {
+    if (g2) g2.volts = vin;
+    r.run(1);
+    return { vin, digit: r.disp ? shownDigit(r.disp, r.sim) : -1 };
+  });
+  return { rows, peak: r.peak(), hurt: r.hurt };
+}
+
 const chip = (func: LogicFunc, count = 1): KitItem => ({ part: "chip", func, count });
 const DISPLAY_KIT: KitItem = { part: "other", type: "display", tool: "display", preset: {}, label: "индикатор SC56-11SRWA", count: 1 };
 const SEG_RESISTORS: KitItem = { part: "resistor", ohms: 330, count: 7 };
@@ -474,6 +489,45 @@ export const PROJECTS: Lesson[] = [
         { text: `Вход вниз: выключается при ${HYST.off} ± ${HYST.tol} В — сейчас ${v(down)}`, ok: down !== undefined && Math.abs(down - HYST.off) <= HYST.tol },
         { text: `Уровни выхода: включён — не ниже 4 В, выключен — не выше 0,4 В — сейчас ${formatSI(hi, "В")} и ${formatSI(lo, "В")}`, ok: hi >= 4 && lo <= 0.4 },
         noHurt([...hurt]),
+      ];
+    },
+  },
+  {
+    id: "proj-sar",
+    project: true,
+    title: "АЦП последовательного приближения",
+    about:
+      "Тот же вольтметр на 4 бита, но устроенный как в настоящих АЦП: ступенька 5/16 В, результат — сколько ступенек целиком укладывается во входное напряжение (округление вниз: 1 В — 3). Измерение идёт само, раз за разом, и индикатор показывает последний результат — между измерениями он не мигает. Вход — источник G2 на столбце 2 (ряды f–j). Питание 5 В — на верхних шинах. Проверка ставит на G2 1; 2,7 и 0,5 В, ждёт по секунде и читает цифру: 3, 8 и 1.",
+    hints: [
+      "Последовательное приближение — как угадывать число вопросами «больше или меньше?»: сначала старший бит, потом следующий. Сколько шагов нужно на 4 бита, и что должно отмечать, какой сейчас шаг?",
+      "На каждом шаге пробный бит включён, а решение по нему запоминается в конце шага. Что умеет запомнить бит по фронту? И когда индикатору можно показывать результат?",
+    ],
+    kit: [
+      chip("timer"),
+      chip("cnt393"),
+      chip("dec3"),
+      chip("dffr", 4),
+      chip("not", 4),
+      chip("or", 4),
+      chip("cmp"),
+      chip("bcd7"),
+      DISPLAY_KIT,
+      SEG_RESISTORS,
+      { part: "resistor", ohms: 10_000, count: 5 },
+      { part: "resistor", ohms: 20_000, count: 5 },
+      { part: "resistor", ohms: 33_000, count: 1 },
+      { part: "other", type: "capacitor", tool: "cap", preset: { variant: "ceramic", ceramicUF: 1, ceramicV: 50 }, match: { variant: "ceramic", uF: 1 }, label: "конденсатор 1 мкФ (керамический)", count: 1 },
+    ],
+    start: () => hystBench("proj-sar"),
+    check(scene) {
+      if (!of(scene, "display").length) return [{ text: "На столе индикатор", ok: false }];
+      const { rows, peak, hurt } = sarRun(scene);
+      const want = (v: number) => Math.floor(v / ADC_LSB);
+      const bad = rows.find((x) => x.digit !== want(x.vin));
+      const show = (d: number) => (d < 0 ? "?" : String(d));
+      return [
+        { text: `Показывает число ступенек: ${rows.map((x) => `${String(x.vin).replace(".", ",")} В → ${show(x.digit)}`).join(", ")}${bad ? ` (при ${String(bad.vin).replace(".", ",")} В нужно ${want(bad.vin)})` : ""}`, ok: !bad },
+        ...displaySteps(peak, hurt),
       ];
     },
   },

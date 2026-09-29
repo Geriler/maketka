@@ -78,6 +78,11 @@ export interface Level {
    * Стабилизатор (check: regulator): выход vout при входе vin и токе нагрузки iout (мин, макс), В и А;
    * допустимые изменения выхода по входу (line) и по нагрузке (load), В; ток покоя iq, А; номинал vnom, В.
    */
+  /**
+   * Задачи с ограничениями: необязательные, засчитываются по лучшим цифрам сборки (транзисторов,
+   * ток покоя, питание «работает от», площадь, соединения) — не больше max.
+   */
+  goals?: Goal[];
   reg?: { vout: [number, number]; vin: [number, number]; iout: [number, number]; line: number; load: number; iq: number; vnom: number; vtyp?: [number, number] };
   /** Выходы с открытым коллектором (стоком): на проверке их подтягивают к питанию резистором 10 кОм. */
   openDrain?: number[];
@@ -114,6 +119,20 @@ const GATE1 = { roles: ["nc", "in", "gnd", "out", "vcc"] as ChipPinRole[], names
 export function gateIo(level: Level): { inputs: number[]; outputs: number[]; vcc: number; gnd: number } {
   const pin = (r: ChipPinRole) => level.roles.map((x, i) => (x === r ? i + 1 : 0)).filter(Boolean);
   return { inputs: level.io?.inputs ?? pin("in"), outputs: level.io?.outputs ?? pin("out"), vcc: pin("vcc")[0], gnd: pin("gnd")[0] };
+}
+
+/** Задача уровня: метрика лучшей сборки не больше max. */
+export interface Goal {
+  metric: "transistors" | "idle" | "vmin" | "area" | "links";
+  max: number;
+  text: string;
+}
+
+/** Выполнена ли задача по цифрам m (лучшим или текущим). */
+export function goalMet(g: Goal, m: { width: number; height: number; links: number; idle: number; transistors: number; vmin?: number } | undefined): boolean {
+  if (!m) return false;
+  const v = g.metric === "area" ? m.width * m.height : m[g.metric];
+  return v !== undefined && v <= g.max + 1e-12;
 }
 
 /** Схемы с памятью: выход зависит не только от входов, но и от того, что было раньше. */
@@ -489,6 +508,7 @@ export const LEVELS: Level[] = [
   {
     id: "not-rtl",
     func: "not",
+    goals: [{ metric: "vmin", max: 2, text: "работает от 2 В" }],
     part: "РТЛ-НЕ",
     title: "НЕ (инвертор), резисторно-транзисторная логика",
     about: "Выход — противоположность входу: на входе единица — на выходе ноль, и наоборот. Соберите на биполярном транзисторе и резисторах.",
@@ -510,6 +530,7 @@ export const LEVELS: Level[] = [
   {
     id: "nand-cmos",
     func: "nand",
+    goals: [{ metric: "idle", max: 1e-6, text: "ток покоя меньше 1 мкА" }],
     part: "74LVC1G00",
     title: "И-НЕ (NAND), КМОП",
     about: "Ноль на выходе — только когда на обоих входах единица; во всех остальных случаях единица.",
@@ -537,6 +558,7 @@ export const LEVELS: Level[] = [
   {
     id: "nand-rtl",
     func: "nand",
+    goals: [{ metric: "vmin", max: 2, text: "работает от 2 В" }],
     part: "РТЛ-И-НЕ",
     title: "И-НЕ (NAND), резисторно-транзисторная логика",
     about: "Ноль на выходе — только когда на обоих входах единица; во всех остальных случаях единица. Соберите на биполярных транзисторах и резисторах.",
@@ -646,6 +668,7 @@ export const LEVELS: Level[] = [
   {
     id: "xor",
     func: "xor",
+    goals: [{ metric: "transistors", max: 16, text: "не больше 16 транзисторов" }],
     part: "74LVC1G86",
     title: "Исключающее ИЛИ (XOR)",
     about: "Единица на выходе, когда входы разные; ноль — когда одинаковые.",
@@ -727,6 +750,7 @@ export const LEVELS: Level[] = [
   {
     id: "xor-nor",
     func: "xor",
+    goals: [{ metric: "transistors", max: 20, text: "не больше 20 транзисторов" }],
     part: "74LVC1G86",
     variant: "только из ИЛИ-НЕ",
     title: "Исключающее ИЛИ (XOR) только из ИЛИ-НЕ",
@@ -947,6 +971,7 @@ export const LEVELS: Level[] = [
   {
     id: "mux-aoi",
     func: "mux",
+    goals: [{ metric: "transistors", max: 20, text: "не больше 20 транзисторов" }],
     part: "74LVC1G157",
     variant: "из И, ИЛИ, НЕ",
     title: "Мультиплексор 2→1 из И, ИЛИ, НЕ",

@@ -229,3 +229,52 @@ describe("проект «Порог с гистерезисом»", () => {
     expect(plain[0].ok && plain[1].ok, plain.map((s) => s.text).join("\n")).toBe(false);
   }, 180000);
 });
+
+describe("проект «АЦП последовательного приближения»", () => {
+  it("555 → 393 → 138 (фазы) → 4 × 1G175 + ИЛИ/НЕ → R-2R → LMV331; 4511 защёлкивает в фазе 5", () => {
+    const hole = (h: string): Endpoint => ({ hole: h });
+    const r = (id: string, ohms: number): Component => ({ id, type: "resistor", variant: "tht", ohms, smdSize: "0805", placement: f });
+    const comps: Component[] = [chip("D1", "ref:ne555"), chip("D2", "ref:cnt393"), chip("D3", "ref:hc138"), chip("DA1", "ref:lmv331"), chip("D4", "ref:hc4511"), { id: "HG1", type: "display", placement: f },
+      r("RA", 10_000), r("RB", 33_000), { id: "C1", type: "capacitor", variant: "ceramic", uF: 1, volts: 50, placement: f }, r("RP", 10_000)];
+    const wires: [Endpoint, Endpoint][] = [
+      [plus, P("D1", 8)], [minus, P("D1", 1)], [plus, P("D1", 4)],
+      [plus, { comp: "RA", pin: 0 }], [{ comp: "RA", pin: 1 }, P("D1", 7)], [P("D1", 7), { comp: "RB", pin: 0 }], [{ comp: "RB", pin: 1 }, P("D1", 6)], [P("D1", 6), P("D1", 2)],
+      [P("D1", 6), { comp: "C1", pin: 0 }], [{ comp: "C1", pin: 1 }, minus],
+      // Фазы: 393 считает такты 555, 138 дешифрует QA QB QC
+      [plus, P("D2", 14)], [minus, P("D2", 7)], [P("D1", 3), P("D2", 1)], [minus, P("D2", 2)], [plus, P("D2", 12)], [minus, P("D2", 13)],
+      [plus, P("D3", 16)], [minus, P("D3", 8)], [P("D2", 3), P("D3", 1)], [P("D2", 4), P("D3", 2)], [P("D2", 5), P("D3", 3)], [minus, P("D3", 4)], [minus, P("D3", 5)], [plus, P("D3", 6)],
+      // Компаратор: вход на IN+, ЦАП на IN−, подтяжка
+      [plus, P("DA1", 5)], [minus, P("DA1", 2)], [hole("j2"), P("DA1", 1)], [P("DA1", 4), { comp: "RP", pin: 0 }], [{ comp: "RP", pin: 1 }, plus],
+      // 4511: код — выходы триггеров, LE̅ = Y̅5
+      [plus, P("D4", 16)], [minus, P("D4", 8)], [plus, P("D4", 3)], [plus, P("D4", 4)], [P("D3", 10), P("D4", 5)], [minus, P("HG1", 3)],
+    ];
+    // Бит k (0 — младший): триггер Tk, инвертор Nk (фаза), ИЛИ Ok (бит ЦАП = Q или фаза). Фаза бита 3 — Y̅1 (вывод 14), 2 — Y̅2 (13), 1 — Y̅3 (12), 0 — Y̅4 (11)
+    const phasePin = [11, 12, 13, 14];
+    const bcd = [7, 1, 2, 6];
+    const node = (k: number): Endpoint => ({ comp: `RB${k}`, pin: 1 });
+    for (let k = 0; k < 4; k++) {
+      comps.push(chip(`T${k}`, "ref:dffr"), chip(`N${k}`, "ref:not-cmos"), chip(`O${k}`, "ref:or"));
+      wires.push(
+        [plus, P(`T${k}`, 5)], [minus, P(`T${k}`, 2)], [plus, P(`N${k}`, 5)], [minus, P(`N${k}`, 3)], [plus, P(`O${k}`, 5)], [minus, P(`O${k}`, 3)],
+        [P("D3", phasePin[k]), P(`T${k}`, 1)], [P("D3", 15), P(`T${k}`, 6)], [P("DA1", 4), P(`T${k}`, 3)],
+        [P("D3", phasePin[k]), P(`N${k}`, 2)], [P(`N${k}`, 4), P(`O${k}`, 1)], [P(`T${k}`, 4), P(`O${k}`, 2)],
+        [P(`T${k}`, 4), P("D4", bcd[k])],
+      );
+      comps.push(r(`RB${k}`, 20_000));
+      wires.push([P(`O${k}`, 4), { comp: `RB${k}`, pin: 0 }]);
+      if (k > 0) {
+        comps.push(r(`RR${k}`, 10_000));
+        wires.push([node(k - 1), { comp: `RR${k}`, pin: 0 }], [{ comp: `RR${k}`, pin: 1 }, node(k)]);
+      }
+    }
+    comps.push(r("RT", 20_000));
+    wires.push([node(0), { comp: "RT", pin: 0 }], [{ comp: "RT", pin: 1 }, minus], [node(3), P("DA1", 3)]);
+    const seg: [number, number][] = [[13, 7], [12, 6], [11, 4], [10, 2], [9, 1], [15, 9], [14, 10]];
+    seg.forEach(([cp, dp], k) => {
+      comps.push(r(`R${k + 1}`, 330));
+      wires.push([P("D4", cp), { comp: `R${k + 1}`, pin: 0 }], [{ comp: `R${k + 1}`, pin: 1 }, P("HG1", dp)]);
+    });
+    const steps = PROJECTS.find((p) => p.id === "proj-sar")!.check(solved("proj-sar", comps, wires));
+    expect(steps.every((s) => s.ok), steps.map((s) => `${s.ok ? "✓" : "✗"} ${s.text}`).join("\n")).toBe(true);
+  }, 240000);
+});
