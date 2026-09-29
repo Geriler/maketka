@@ -137,6 +137,15 @@
   .group[open] > .group-head { background: var(--paper-2); }
   .group-head.active { background: var(--copper-soft); border-color: var(--copper); }
   .group-head.active svg { stroke: var(--copper); }
+  /* Разделы меню микросхем: вкладки над списком */
+  .tool[hidden] { display: none; }
+  details[data-group="chips"] > .group-body { width: 300px; max-height: calc(100vh - 120px); overflow-y: auto; }
+  .chip-tabs { display: flex; flex-wrap: wrap; gap: 4px; padding: 2px 2px 6px; margin-bottom: 4px; border-bottom: 1px solid var(--line); }
+  .chip-tab { padding: 3px 8px; border: 1px solid var(--line); border-radius: 12px; background: transparent; color: var(--ink); font: 500 12px var(--sans); cursor: pointer; }
+  .chip-tab small { color: var(--muted); font: 500 11px var(--mono); }
+  .chip-tab:hover { border-color: var(--copper); }
+  .chip-tab[aria-pressed="true"] { background: var(--copper-soft); border-color: var(--copper); }
+  .chip-tab:focus-visible { outline: 2px solid var(--copper); outline-offset: 1px; }
   .group-body {
     position: absolute;
     left: calc(100% + 14px);
@@ -458,6 +467,10 @@
       padding: 6px;
     }
     .menu-body { position: fixed; top: 56px; left: auto; right: 16px; }
+    /* Микросхемы: вкладки — строкой с прокруткой, под ними — список раздела с переносом */
+    details[data-group="chips"] > .group-body { width: auto; flex-wrap: wrap; max-height: 45vh; overflow-x: hidden; overflow-y: auto; }
+    .chip-tabs { flex: 0 0 100%; flex-wrap: nowrap; overflow-x: auto; margin: 0 0 4px; padding: 0 0 6px; }
+    .chip-tab { white-space: nowrap; flex: 0 0 auto; }
     #schematic { left: 16px; right: 16px; width: auto; min-width: 0; bottom: calc(86px + env(safe-area-inset-bottom, 0px)); height: 40%; resize: none; }
     .sch-head small { display: none; }
     .tool { grid-template-columns: 1fr; justify-items: center; gap: 2px; font-size: 11px; padding: 4px 6px; flex: 0 0 auto; }
