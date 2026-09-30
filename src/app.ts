@@ -59,6 +59,7 @@ import { ProjectsPanel } from "./ui/projects";
 import { loadLibrary, saveLibrary } from "./chips/library";
 import { caseOf, chipInner, dipSize, packageChip, packageProblems, spaceUsed } from "./chips/package";
 import { chipsUsed, libraryChips, referenceList, resolveChip, setCareerChips, setChipToolSource, setLibrary, setReference } from "./chips/registry";
+import { memoryChips } from "./chips/memory";
 import { checkLevel, levelScene, publicChips, referenceChips, type CheckResult } from "./career/build";
 import { goalMet, levelById, type Level } from "./career/levels";
 import type { Lesson } from "./career/lessons";
@@ -181,7 +182,7 @@ export class App {
     this.scene = initial;
     setLibrary(loadLibrary());
     // Заводские компоненты карьеры (для песочницы) и открытые игроком
-    setReference(referenceChips());
+    setReference([...referenceChips(), ...memoryChips()]);
     setCareerChips(careerDefs());
     setToolFilter((t) => toolAllowed(this.scene, t));
     setKitTools(kitTools(this.scene));
@@ -255,6 +256,9 @@ export class App {
   }
 
   /** Вызывать после любого изменения сцены. */
+  /** Поле панели, на которое вернуть фокус после перерисовки (ячейки ПЗУ). */
+  private refocus?: string;
+
   changed(): void {
     this.simErrorShown = false;
     try {
@@ -1107,7 +1111,8 @@ export class App {
   private applyMode(): void {
     document.body.classList.toggle("mode-career", this.mode === "career");
     // Учебные промежуточные компоненты — только в наборах уровней, не в мастерской и не в песочнице
-    setChipToolSource(this.mode === "career" ? () => publicChips(careerDefs()) : () => [...publicChips(referenceList()), ...libraryChips()]);
+    // Прошиваемое ПЗУ в карьере открывает уровень «ПЗУ на диодах»
+    setChipToolSource(this.mode === "career" ? () => [...publicChips(careerDefs()), ...(isDone("rom8") ? memoryChips() : [])] : () => [...publicChips(referenceList()), ...libraryChips()]);
     setKitTools(kitTools(this.scene));
     renderToolButtons(this.ui.tools);
     this.onTool?.(this.tool);
@@ -2484,7 +2489,9 @@ export class App {
     this.ui.inspector.hidden = key === "o" && !this.showHelp;
     // Не пересоздаём разметку, пока в этой же панели открыт выпадающий список
     const focused = document.activeElement;
-    if ((focused instanceof HTMLSelectElement || focused instanceof HTMLInputElement) && this.ui.inspector.contains(focused) && key === this.inspectorKey) return;
+    // Ячейку ПЗУ перерисовываем (после ввода выводы уже другие), а фокус вернём — на ту, что попросили
+    const romCell = focused instanceof HTMLInputElement && !!focused.dataset.field?.startsWith("rom:");
+    if ((focused instanceof HTMLSelectElement || focused instanceof HTMLInputElement) && !romCell && this.ui.inspector.contains(focused) && key === this.inspectorKey) return;
     if (key === this.inspectorKey && html === this.inspectorHtml) return;
     // Кнопку в панели держат — не пересоздаём её, иначе удержание оборвётся
     if (this.panelHold && key === this.inspectorKey) return;
@@ -2492,6 +2499,13 @@ export class App {
     this.inspectorHtml = html;
     this.ui.inspector.innerHTML = html;
     this.bindInspector();
+    const again = this.refocus ?? (romCell ? (focused as HTMLInputElement).dataset.field : undefined);
+    this.refocus = undefined;
+    const cell = again ? this.ui.inspector.querySelector<HTMLInputElement>(`input[data-field="${again}"]`) : null;
+    if (cell) {
+      cell.focus();
+      cell.select();
+    }
     if (key === "p") this.projects.bind(this.ui.inspector);
     if (key === "cl" || key === "cc" || key === "cs") this.career.bind(this.ui.inspector);
   }
@@ -2522,6 +2536,12 @@ export class App {
     // Текстовые поля (имя вывода микросхемы): по Enter или уходу с поля
     root.querySelectorAll<HTMLInputElement>("input[type=text][data-field]").forEach((inp) => {
       inp.addEventListener("change", () => this.applyField(inp.dataset.field!, inp.value));
+      // Ячейка ПЗУ: Enter — к следующему адресу (таблицу заполняют подряд)
+      const rom = inp.dataset.field!.match(/^rom:(\d+)$/);
+      if (rom)
+        inp.addEventListener("keydown", (e) => {
+          if (e.key === "Enter") this.refocus = `rom:${(Number(rom[1]) + 1) % 32}`;
+        });
     });
     // Ползунки блока питания: меняем уставку на лету, без перестройки сцены
     root.querySelectorAll<HTMLInputElement>("input[type=range][data-field]").forEach((inp) => {
@@ -2608,6 +2628,8 @@ export class App {
         const act = btn.dataset.act;
         if (!id) return;
         if (act === "delete") this.remove(id);
+        // Стереть ПЗУ — как правка поля: с отменой и сохранением
+        if (act === "romClear") return this.applyField("rom:clear", "");
         if (act === "openChip") {
           const c = this.component(id);
           if (c?.type === "chip") this.openChip(c.def);

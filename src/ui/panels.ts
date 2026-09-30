@@ -83,7 +83,11 @@ export function statusPill(h: PanelHost, c: Component): string {
   const k = h.sim.overload(c);
   const t = heatThreshold(c);
   if (t && k > t) return pill("bad", `ПЕРЕГРУЗКА ×${k.toFixed(1).replace(".", ",")}`);
-  if (t && k > t * 0.7) return pill("warn", p.warmWord?.(k) ?? "ГРЕЕТСЯ");
+  // Близко к пределу по напряжению — это не нагрев: 5 В на 74LVC (предел 6,5 В) — обычный режим
+  if (t && k > t * 0.7) {
+    if (h.sim.load(c)?.what !== "напряжение") return pill("warn", p.warmWord?.(k) ?? "ГРЕЕТСЯ");
+    if (k > t * 0.9) return pill("warn", "НАПРЯЖЕНИЕ У ПРЕДЕЛА");
+  }
   return p.status?.(c, h.sim) ?? pill("ok", "НОРМА");
 }
 

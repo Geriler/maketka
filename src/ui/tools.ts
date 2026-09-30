@@ -3,6 +3,7 @@
 import type { Component } from "../model/types";
 import { PARTS, type ToolDef } from "../parts";
 import { LEVELS, type LogicFunc } from "../career/levels";
+import { PROM_ID } from "../chips/memory";
 
 /** Инструмент: встроенный (выбор, провод, дорожка, платы, удаление) или установка детали (id из PartDef.tools). */
 export type Tool = "select" | "wire" | "trace" | "bb" | "pcb" | "smdb" | "delete" | PlaceTool;
@@ -41,7 +42,7 @@ const CHIP_CATS: { name: string; funcs: LogicFunc[] }[] = [
   { name: "Вентили", funcs: ["not", "nand", "nor", "and", "or", "xor", "xnor", "xnor4", "buf", "schmitt"] },
   { name: "Выбор", funcs: ["mux", "mux4q", "dec2", "dec3", "seg7", "bcd7"] },
   { name: "Числа", funcs: ["half", "full", "add4", "addsub", "eq2", "mag1", "mag4"] },
-  { name: "Память", funcs: ["sr", "dlatch", "dff", "dlatchr", "dffr", "sreg4", "sreg8", "sreg595", "reg8z", "reg173"] },
+  { name: "Память", funcs: ["sr", "dlatch", "dff", "dlatchr", "dffr", "sreg4", "sreg8", "sreg595", "reg8z", "reg173", "rom8"] },
   { name: "Счёт и время", funcs: ["div2", "cnt4", "tffr", "cnt393", "cnt1", "cnt161", "johnson", "cnt4017", "timer", "osc", "rcdb", "debounce"] },
   { name: "Шина", funcs: ["tbuf", "tbuf4", "buf8z", "bus245"] },
   { name: "Аналоговые", funcs: ["cmp", "cmp2", "opamp", "opamp2", "vref", "reg5"] },
@@ -49,6 +50,7 @@ const CHIP_CATS: { name: string; funcs: LogicFunc[] }[] = [
 const OWN = "Свои";
 /** Раздел микросхемы по инструменту chip:ref:… / chip:career:… (обозначение уровня карьеры). */
 export function chipCat(toolId: string): string {
+  if (toolId === `chip:${PROM_ID}`) return "Память";
   const level = LEVELS.find((l) => l.id === toolId.match(/^chip:(?:ref|career):(.+)$/)?.[1]);
   return (level && CHIP_CATS.find((c) => c.funcs.includes(level.func))?.name) ?? OWN;
 }

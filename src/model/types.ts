@@ -401,6 +401,8 @@ export interface Chip extends Base {
   pins: number;
   /** Микросхема в DIP-исполнении взята в корпусе SOIC (SO-n): только на плату под SMD. */
   smd?: boolean;
+  /** Содержимое памяти (у ПЗУ — прошитые слова по адресам), у каждой поставленной своё. */
+  data?: number[];
 }
 
 /**

@@ -11,7 +11,7 @@ import type { ChipPackage, ChipPinRole } from "../model/breadboard";
 import type { DiodeKind, MosfetKind, TransistorKind } from "../model/types";
 
 /** Логическая функция компонента. */
-export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173" | "bus245";
+export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173" | "bus245" | "rom8";
 
 /** Деталь набора: сколько штук и что именно (тип и номинал). */
 export type KitItem =
@@ -372,6 +372,9 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
     // 74HC125: четыре буфера, входы парами (1OE̅, 1A, 2OE̅, 2A…)
     case "tbuf4":
       return [bits[1], bits[3], bits[5], bits[7]];
+    // ПЗУ на диодах (A0, A1, A2): слово из таблицы ROM8, выходы D0…D3
+    case "rom8":
+      return [0, 1, 2, 3].map((k) => !!(ROM8[num(bits.slice(0, 3))] & (1 << k)));
     // 74HC157 (E̅, S, 1I0, 1I1, 2I0, 2I1…): при E̅ = 1 все выходы — ноль, иначе S выбирает I0 или I1
     case "mux4q":
       return [0, 1, 2, 3].map((k) => !a && (b ? bits[3 + 2 * k] : bits[2 + 2 * k]));
@@ -485,6 +488,49 @@ const STEP = "Такой микросхемы не выпускают — это
  * (единица — сегменты могут гореть), резисторы 10 кОм от S к сегментам и диоды от сегмента к
  * выходу дешифратора той цифры, где сегмент не горит.
  */
+/** Содержимое ПЗУ на диодах (уровень rom8): слово D3…D0 по адресам 0…7. */
+export const ROM8 = [0xa, 0x3, 0x5, 0xc, 0x7, 0x0, 0xf, 0x9];
+
+/**
+ * ПЗУ на диодах: 74HC138 выбирает строку (выбранная — ноль), линии данных подтянуты к питанию, диод
+ * от линии к строке стоит там, где в слове ноль: выбранная строка утягивает через него линию вниз.
+ */
+const ROM8_RECIPE: Recipe = (() => {
+  // Выходы 74HC138 Y0…Y7 и выводы корпуса D0…D3
+  const row = [15, 14, 13, 12, 11, 10, 9, 7].map((p) => `D1.${p}`);
+  const dataPin = [11, 10, 9, 8];
+  const slots: [string, string, number][] = [];
+  for (let col = 12; col <= 20; col++) for (const [r1, r2] of [["A", "C"], ["B", "D"], ["E", "G"], ["F", "H"]] as const) slots.push([r1, r2, col]);
+  const parts: Recipe["parts"] = [ic("D1", "dec3", 16, "D", 2)];
+  const nets: string[][] = [
+    ...power("P14", "P7", [{ id: "D1", vcc: 16, gnd: 8 }]),
+    ["P1", "D1.1"],
+    ["P2", "D1.2"],
+    ["P3", "D1.3"],
+    ["P14", "D1.6"],
+    ["P7", "D1.4", "D1.5"],
+  ];
+  let n = 0;
+  const up: string[] = ["P14"];
+  dataPin.forEach((pin, k) => {
+    const [r1, r2, col] = slots[n++];
+    parts.push({ id: `R${k + 1}`, ohms: 10000, holes: [`k:${r1}${col}`, `k:${r2}${col}`] });
+    up.push(`R${k + 1}.1`);
+    const net = [`P${pin}`, `R${k + 1}.2`];
+    ROM8.forEach((w, a) => {
+      if (w & (1 << k)) return;
+      const [a1, c1, col2] = slots[n++];
+      const id = `VD${n}`;
+      parts.push(vd(id, a1, c1, col2));
+      net.push(`${id}.1`);
+      nets.push([`${id}.2`, row[a]]);
+    });
+    nets.push(net);
+  });
+  nets.push(up);
+  return { parts, nets };
+})();
+
 const SEG7_RECIPE: Recipe = (() => {
   // Выводы корпуса: сегменты a…g и где на дешифраторах выход цифры 0…9
   const segPin = [13, 12, 11, 10, 9, 15, 14];
@@ -2668,6 +2714,30 @@ export const LEVELS: Level[] = [
       ],
     },
   },
+  {
+    id: "rom8",
+    func: "rom8",
+    part: "ПЗУ НА ДИОДАХ",
+    intermediate: true,
+    title: "Постоянная память на диодах",
+    about:
+      "Память, которая помнит без питания: по адресу A2 A1 A0 (0…7) на выходах D3…D0 появляется слово из таблицы. Содержимое: 0 → 1010, 1 → 0011, 2 → 0101, 3 → 1100, 4 → 0111, 5 → 0000, 6 → 1111, 7 → 1001 (D3 слева). Выводы: 1 A0, 2 A1, 3 A2, 4–6 не подключены, 7 GND, 8 D3, 9 D2, 10 D1, 11 D0, 12–13 не подключены, 14 VCC. Такой микросхемы не выпускают — это учебная ступенька. Пройдёте — откроется прошиваемое ПЗУ 74S288: там содержимое не паяют, а вписывают в таблицу.",
+    hints: [
+      "Дешифратор уже умеет выбрать одну строку из восьми по адресу. Что сделать с линией данных, чтобы выбранная строка могла её испортить, а остальные — нет?",
+      "Диод пропускает ток только в одну сторону. Куда он должен смотреть, чтобы выбранная строка утягивала линию к нулю, а невыбранные ей не мешали? И где ставить диоды — там, где в слове единицы, или где нули?",
+    ],
+    package: "DIP",
+    roles: ["in", "in", "in", "nc", "nc", "nc", "gnd", "out", "out", "out", "out", "nc", "nc", "vcc"],
+    names: ["A0", "A1", "A2", "", "", "", "", "D3", "D2", "D1", "D0", "", "", ""],
+    io: { inputs: [1, 2, 3], outputs: [11, 10, 9, 8] },
+    room: 500,
+    kit: [
+      { part: "chip", func: "dec3", count: 1 },
+      { part: "other", type: "diode", tool: "diode", preset: { kind: "1N4148" }, label: "диод 1N4148", count: 16 },
+      { part: "resistor", ohms: 10000, count: 4 },
+    ],
+    recipe: ROM8_RECIPE,
+  },
   // ─── Числа: разряд компаратора → 74HC85; 74HC595; проект АЛУ ─────────────────────────────
   {
     id: "mag1",
@@ -2929,6 +2999,7 @@ export const FUNC_NAMES: Record<LogicFunc, string> = {
   cnt161: "Синхронный счётчик 4 бит",
   reg173: "Регистр 4 бит с тремя состояниями",
   bus245: "Двунаправленный буфер шины",
+  rom8: "ПЗУ 8 × 4 на диодах",
   timer: "Таймер 555",
   mag1: "Разряд компаратора",
   mag4: "Компаратор чисел 4 бит",

@@ -4,6 +4,15 @@
  */
 
 import { FUNC_NAMES, LEVELS, type LogicFunc } from "../career/levels";
+import { PROM_ID } from "./memory";
+
+/** Память — не из уровней карьеры: описание прямо по обозначению. */
+const MEMORY: Record<string, { kind: string; about: string }> = {
+  [PROM_ID]: {
+    kind: "ПЗУ 32 × 8 (прошиваемое)",
+    about: "Постоянная память: 32 слова по 8 бит. Адрес на A0…A4 выбирает слово, при G̅ = 0 оно на выходах Q0…Q7; G̅ = 1 — выходы отключены (третье состояние). Что лежит по каждому адресу, задаёте вы — в таблице этой микросхемы. Хранит программу, таблицу, шрифт цифр.",
+  },
+};
 
 const ABOUT: Record<LogicFunc, string> = {
   not: "Инвертор: на выходе Y — противоположное входу A.",
@@ -60,6 +69,7 @@ const ABOUT: Record<LogicFunc, string> = {
   cnt1: "Разряд синхронного счётчика: по фронту CLK загружает P, переключается или хранит; TC — перенос в следующий разряд.",
   cnt161: "Синхронный счётчик 4 бит: по фронту CLK прибавляет единицу, когда ENP = ENT = 1; LOAD̅ = 0 — загружает число A…D; CLR̅ = 0 — обнуляет сразу; RCO — перенос для следующего счётчика. Счётчик команд процессора.",
   reg173: "Регистр 4 бит на шину: по фронту CP запоминает D0…D3, если E̅1 = E̅2 = 0, иначе хранит; MR = 1 — ноль; OE̅1 или OE̅2 = 1 — выходы отключены. Регистр процессора.",
+  rom8: "ПЗУ на диодах: по адресу A2 A1 A0 выдаёт на D3…D0 слово из зашитой таблицы.",
   bus245: "Двунаправленный буфер шины: DIR = 1 — передаёт с A на B, DIR = 0 — с B на A; OE̅ = 1 — отключены обе стороны. Подключает к шине то, что и читает, и пишет.",
 };
 
@@ -71,12 +81,14 @@ export function chipFuncOf(defId: string): LogicFunc | undefined {
 
 /** Что делает микросхема (одним-тремя предложениями) или undefined. */
 export function chipAbout(defId: string): string | undefined {
+  if (MEMORY[defId]) return MEMORY[defId].about;
   const f = chipFuncOf(defId);
   return f && ABOUT[f];
 }
 
 /** Короткое название того, что она делает, — строкой под обозначением в меню. */
 export function chipKind(defId: string): string | undefined {
+  if (MEMORY[defId]) return MEMORY[defId].kind;
   const f = chipFuncOf(defId);
   return f && FUNC_NAMES[f];
 }

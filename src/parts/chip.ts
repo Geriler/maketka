@@ -11,6 +11,7 @@ import { type ComponentView, blackPlastic, disposeGroup, freeTransform, lead, mm
 import { kv, pill, selectField } from "../view/panel";
 import { PIN_ROLES } from "../chips/roles";
 import { chipAbout, chipKind } from "../chips/about";
+import { PROM_ID, PROM_WORDS, hex2, parseWord, promWord } from "../chips/memory";
 import { toolFor, type PartDef } from "./types";
 
 /** Подпись вывода корпуса: имя, у неподключённого — NC. */
@@ -150,7 +151,7 @@ export const chip: PartDef<Chip> = {
       const levels = inputLevels(c, model, sim, prev);
       const open = levels.map((l, i) => (l === undefined ? i : -1)).filter((i) => i >= 0);
       const tries = open.length > 4 ? [] : Array.from({ length: 1 << open.length }, (_, m) => levels.map((l, i) => l ?? !!(m & (1 << open.indexOf(i)))));
-      const results = tries.map((bits) => model.logic(bits, prev));
+      const results = tries.map((bits) => model.logic(bits, prev, c.data));
       if (model.state && tries.length === 1) {
         sim.junction.set(`${c.id}:rs`, model.state(tries[0], prev));
         sim.junction.set(`${c.id}:ri`, tries[0].reduce((m, b, i) => m | (b ? 1 << i : 0), 0));
@@ -229,9 +230,21 @@ export const chip: PartDef<Chip> = {
   power: () => 0,
   readout: (c, sim) => {
     const def = resolveChip(sim.scene, c.def);
-    return `<div class="kv"><span>${def ? `${def.name}, ${packageName(def.package, def.pins)}` : "Нет описания микросхемы"}</span><span>${def ? countShort(countChip(def, sim.scene)) : ""}</span></div>`;
+    return `<div class="kv"><span>${def ? `${def.name}, ${packageName(def.package, def.pins)}` : "Нет описания микросхемы"}</span><span>${def?.id === PROM_ID ? "по даташиту" : def ? countShort(countChip(def, sim.scene)) : ""}</span></div>`;
   },
   status: (c, sim) => (resolveChip(sim.scene, c.def) ? pill("ok", "РАБОТАЕТ") : pill("bad", "НЕТ ОПИСАНИЯ — ОТКРОЙТЕ ПРОЕКТ, ГДЕ ОНА ЕСТЬ")),
+
+  // Содержимое ПЗУ: «rom:адрес» — слово (что не разобрать — не меняем), «rom:clear» — всё в нули
+  edit(c, field, value) {
+    if (field === "rom:clear") return void delete c.data;
+    const a = Number(field.match(/^rom:(\d+)$/)?.[1]);
+    const w = parseWord(value);
+    if (!Number.isInteger(a) || a < 0 || a >= PROM_WORDS || w === undefined) return;
+    const data = Array.from({ length: PROM_WORDS }, (_, i) => promWord(c.data, i));
+    data[a] = w;
+    c.data = data.some(Boolean) ? data : undefined;
+    if (!c.data) delete c.data;
+  },
 
   panel(c, sim) {
     const def = resolveChip(sim.scene, c.def);
@@ -241,6 +254,28 @@ export const chip: PartDef<Chip> = {
       const v = volts(i);
       return kv(`${i + 1} ${chipPinName(def, i)}`, v === undefined ? "не подключён" : formatSI(v, "В"));
     }).join("");
+    // ПЗУ: вместо начинки — таблица содержимого (прошивка), текущее слово подсвечено
+    if (def.id === PROM_ID) {
+      const high = (p: number) => {
+        const v = volts(p - 1), g = volts(7);
+        return v !== undefined && g !== undefined && v - g > 1.4;
+      };
+      const addr = [10, 11, 12, 13, 14].reduce((m, p, i) => m | (high(p) ? 1 << i : 0), 0);
+      const cells = Array.from({ length: PROM_WORDS }, (_, a) => {
+        const w = promWord(c.data, a);
+        return `<label class="rom-cell${a === addr && !high(15) ? " now" : ""}" title="Адрес ${a} (${a.toString(2).padStart(5, "0")}): ${w.toString(2).padStart(8, "0")} = ${w}"><span>${a.toString(16).toUpperCase().padStart(2, "0")}</span><input class="btn" type="text" maxlength="10" data-field="rom:${a}" value="${hex2(w)}" aria-label="Слово по адресу ${a}" /></label>`;
+      }).join("");
+      return {
+        title: def.name,
+        body: `<p>${chipAbout(def.id) ?? ""}</p>
+          <div class="eyebrow">содержимое (адрес → слово, шестнадцатеричное)</div>
+          <div class="rom-grid">${cells}</div>
+          <p class="sub">Впишите слово: шестнадцатеричное (3F), восемь двоичных цифр (00111111) или десятичное с d (d63). Подсвечено слово, которое сейчас на выходах. Содержимое у каждой такой микросхемы своё и сохраняется в проекте.</p>
+          <div class="eyebrow">выводы (потенциал)</div>${rows}
+          <p class="sub">Заводская, по даташиту DM74S288: выходы и входы TTL, питание 4,5–5,5 В, потребляет около 70 мА.</p>`,
+        editor: `<div class="row"><button class="btn inline" data-act="romClear">Стереть всё (нули)</button></div>`,
+      };
+    }
     const burned = def.parts.filter((p) => sim.state(`${c.id}/${p.id}`).burned).map((p) => p.id);
     const k = countChip(def, sim.scene);
     return {
@@ -282,7 +317,7 @@ function runState(c: Chip, model: ChipModel, sim: Simulation): ModelState | unde
   const ri = sim.junction.get(`${c.id}:ri`);
   if (rs === undefined || ri === undefined) return base;
   const inputs = model.inputs.map((_, i) => !!(ri & (1 << i)));
-  return { inputs, outputs: model.logic(inputs, base), state: rs };
+  return { inputs, outputs: model.logic(inputs, base, c.data), state: rs };
 }
 
 function inputLevels(c: Chip, model: ChipModel, sim: Simulation, prev?: ModelState): (boolean | undefined)[] {

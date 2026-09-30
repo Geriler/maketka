@@ -137,6 +137,12 @@
   .group[open] > .group-head { background: var(--paper-2); }
   .group-head.active { background: var(--copper-soft); border-color: var(--copper); }
   .group-head.active svg { stroke: var(--copper); }
+  /* Таблица содержимого ПЗУ: адрес и слово, по четыре в ряд */
+  .rom-grid { display: grid; grid-template-columns: repeat(4, 1fr); gap: 4px; margin: 4px 0 6px; }
+  .rom-cell { display: flex; align-items: center; gap: 3px; font: 500 11px var(--mono); color: var(--muted); }
+  .rom-cell input { width: 100%; min-width: 0; padding: 3px 4px; font: 500 12px var(--mono); text-align: center; box-shadow: none; }
+  .rom-cell.now span { color: var(--copper); font-weight: 700; }
+  .rom-cell.now input { border-color: var(--copper); background: var(--copper-soft); }
   /* Разделы меню микросхем: вкладки над списком */
   .tool[hidden] { display: none; }
   .tool-name { display: flex; flex-direction: column; min-width: 0; }

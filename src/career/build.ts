@@ -13,6 +13,7 @@ import { formatSI } from "../sim/resistorCodes";
 import { FUNC_NAMES, LEVELS, SEQUENTIAL, SMD_TWIN, gateIo, kitLabel, seqNext, seqOuts, seqState, sequenceExpected, truth, zOutputs, type KitItem, type Level, type LogicFunc } from "./levels";
 import { PIN_ROLES } from "../chips/roles";
 import { MODEL_OFF, REF_ABS_MAX, chipModel, setModelSource, type ChipModel, type ModelPoint, type ModelState } from "../chips/model";
+import { memoryModel } from "../chips/memory";
 
 /** Напряжение питания при проверке, В. */
 export const CHECK_VOLTS = 5;
@@ -1064,6 +1065,9 @@ export function supplySweep(def: ChipDef, level: Level, chips: Record<string, Ch
  * целиком, со всеми своими ошибками.
  */
 export function characterize(def: ChipDef, scene: Scene): ChipModel | undefined {
+  // Память (ПЗУ) — модель по даташиту: собирать её из деталей не нужно
+  const mem = memoryModel(def);
+  if (mem) return mem;
   const level = chipLevel(def.id);
   // Генератор моделью не описать: у него нет таблицы — считается целиком
   // Генератор и подавитель дребезга живут временем (RC) — модель без времени их не заменит
