@@ -330,6 +330,42 @@ export function cpuEmulate(rom: number[], clocks: number): number[] {
   return outs;
 }
 
+// ─── Процессор 8 бит: два 4-битных среза, два ПЗУ — число и команда ─────────────
+
+/** Площадки 8-битного: питание, CLK, RST — как у 4-битного; выходы OUT0…OUT7 — J6…J13. */
+export const CPU8_OUT = ["s:J6", "s:J7", "s:J8", "s:J9", "s:J10", "s:J11", "s:J12", "s:J13"];
+/** Плата 8-битного, шагов: пятнадцать микросхем и восемь светодиодов. */
+export const CPU8_BOARD = { cols: 52, rows: 40 };
+
+/**
+ * Программа 8-битного: команда — 12 бит в двух ПЗУ по одному адресу. ПЗУ «число» — N (8 бит),
+ * ПЗУ «команда» — биты 7…4 как у 4-битного (переход, вывод, запись в A, A + N), младшие — 0.
+ * Переход — на N mod 16. Каждый провод данных хоть раз несёт единицу: в A грузятся A5 и 5A (все
+ * восемь бит), складываются A5 + 5A = FF, FF + 1 = 0 (перенос через оба среза и за 255), 0 + FE;
+ * на выходе FF; переход — на 15 (все биты загрузки счётчика).
+ * 0: A ← A5; 1: A ← A + 5A; 2: вывести A, A ← A + 1; 3: A ← A + FE; 4: вывести A, A ← 5A; 5: на 15;
+ * 15: вывести A, на 1.
+ */
+export const CPU8_PROGRAM = {
+  n: [0xa5, 0x5a, 0x01, 0xfe, 0x5a, 0x0f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01],
+  op: [0x20, 0x30, 0x70, 0x30, 0x60, 0x80, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xc0],
+};
+
+/** Что на выходе 8-битного после каждого такта (от сброса). */
+export function cpu8Emulate(prog: { n: number[]; op: number[] }, clocks: number): number[] {
+  let pc = 0, a = 0, out = 0;
+  const outs: number[] = [];
+  for (let i = 0; i < clocks; i++) {
+    const w = prog.op[pc] ?? 0, n = prog.n[pc] ?? 0;
+    const next = w & CPU_OPS.add ? (a + n) & 255 : n;
+    if (w & CPU_OPS.out) out = a;
+    if (w & CPU_OPS.wa) a = next;
+    pc = w & CPU_OPS.jmp ? n & 15 : (pc + 1) & 15;
+    outs.push(out);
+  }
+  return outs;
+}
+
 /** Плата процессора под SMD, двусторонняя, шагов 2,54 мм: площадки для проводов J1…J35 — вдоль ближнего края. */
 export const CPU_BOARD = { cols: 36, rows: 26 };
 
@@ -338,21 +374,23 @@ export const CPU_BOARD = { cols: 36, rows: 26 };
  * где не развести — снизу, через переходы). Питание и кнопки CLK, RST без дребезга (к +5 В, подтяжка 10 кОм к общему) — на
  * площадках у края: J1 — общий, J2 — +5 В.
  */
-function cpuBench(id: string): Scene {
+function cpuBench(id: string, board = CPU_BOARD): Scene {
   const plus = { comp: "G1", pin: 1 }, minus = { comp: "G1", pin: 0 };
+  // Блок питания — слева от платы, кнопки — перед ней
+  const left = -board.cols / 2, near = board.rows / 2;
   const s: Scene = {
-    components: [{ id: "G1", type: "psu", volts: 5, amps: 1, on: true, placement: free(-34, -4) }],
+    components: [{ id: "G1", type: "psu", volts: 5, amps: 1, on: true, placement: free(left - 16, -4) }],
     wires: [
       { id: "W1", a: minus, b: { hole: CPU_PINS.gnd }, color: "#1b1d20" },
       { id: "W2", a: plus, b: { hole: CPU_PINS.vcc }, color: "#c8261f" },
     ],
-    boards: [{ id: "S1", kind: "smd", x: 0, z: 0, cols: CPU_BOARD.cols, rows: CPU_BOARD.rows, seats: [], layers: 2 }],
+    boards: [{ id: "S1", kind: "smd", x: 0, z: 0, cols: board.cols, rows: board.rows, seats: [], layers: 2 }],
     career: { lesson: id },
   };
-  ([["SB1", CPU_PINS.clk, -12], ["SB2", CPU_PINS.rst, -4]] as const).forEach(([cid, hole, x], i) => {
+  ([["SB1", CPU_PINS.clk, left + 6], ["SB2", CPU_PINS.rst, left + 14]] as const).forEach(([cid, hole, x], i) => {
     s.components.push(
-      { id: cid, type: "button", placement: free(x, 20), stock: true } as Component,
-      { id: `RS${i + 1}`, type: "resistor", variant: "tht", ohms: 10_000, smdSize: "0805", placement: free(x, 26), stock: true },
+      { id: cid, type: "button", placement: free(x, near + 7), stock: true } as Component,
+      { id: `RS${i + 1}`, type: "resistor", variant: "tht", ohms: 10_000, smdSize: "0805", placement: free(x, near + 13), stock: true },
     );
     s.wires.push(
       { id: `WI${i}a`, a: plus, b: { comp: cid, pin: 0 }, color: "#c8261f" },
@@ -368,11 +406,11 @@ function cpuBench(id: string): Scene {
 export const CPU_CLOCKS = 24;
 
 /** Прогнать процессор: сброс, такты по одному, после каждого — что на выходе; потом сброс посреди работы. */
-export function cpuRun(scene: Scene) {
+export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out) {
   const r = runner(scene);
   const g1 = r.sim.scene.components.find((c) => c.id === "G1")!;
   const v = (hole: string) => (r.sim.solution.voltage.get(HOLE_BY_ID.get(hole)!.node) ?? 0) - (r.sim.solution.voltage.get(pinNode(g1, 0)) ?? 0);
-  const out = () => CPU_PINS.out.reduce((m, h, k) => m | (v(h) > 2.5 ? 1 << k : 0), 0);
+  const out = () => outPins.reduce((m, h, k) => m | (v(h) > 2.5 ? 1 << k : 0), 0);
   // В схеме из одних моделей нет ничего, что меняется со временем, — шаг её не пересчитывает;
   // нажатие меняет схему, поэтому после него — пересчёт (как делает стол, когда жмут кнопку)
   const press = (id: string) => {
@@ -404,6 +442,30 @@ export function cpuRun(scene: Scene) {
 const chip = (func: LogicFunc, count = 1): KitItem => ({ part: "chip", func, count });
 const DISPLAY_KIT: KitItem = { part: "other", type: "display", tool: "display", preset: {}, label: "индикатор SC56-11SRWA", count: 1 };
 const SEG_RESISTORS: KitItem = { part: "resistor", ohms: 330, count: 7 };
+
+/**
+ * Шаги проверки процессора после программы: висящие входы, медь, сброс, такт за тактом, сброс
+ * посреди работы, перегрев. want(k) — что должно быть на выходе после k тактов (эмулятор).
+ */
+function cpuSteps(scene: Scene, outPins: readonly string[], want: (clocks: number) => number[], fmt: (v: number) => string): LessonStep[] {
+  const { afterReset, outs, again, hurt } = cpuRun(scene, outPins);
+  const w = want(CPU_CLOCKS);
+  const bad = outs.findIndex((o, i) => o !== w[i]);
+  const wAgain = want(again.length);
+  const badAgain = again.findIndex((o, i) => o !== wAgain[i]);
+  const floating = floatingInputs(scene);
+  const shorts = foreignContacts(scene);
+  const shortName = (k: (typeof shorts)[number]) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`;
+  const list = (xs: number[]) => xs.map(fmt).join(" ");
+  return [
+    { text: floating.length ? `Входы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы микросхем куда-то подключены", ok: !floating.length },
+    { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
+    { text: `После RST на выходе 0 — сейчас ${fmt(afterReset)}`, ok: afterReset === 0 },
+    { text: `Такт за тактом на выходе: ${list(outs)}${bad >= 0 ? ` (на ${bad + 1}-м такте нужно ${fmt(w[bad])})` : ""}`, ok: bad < 0 },
+    { text: `RST посреди работы — и снова с начала: ${list(again)}${badAgain >= 0 ? ` (нужно ${list(wAgain)})` : ""}`, ok: badAgain < 0 },
+    noHurt([...hurt]),
+  ];
+}
 
 export const PROJECTS: Lesson[] = [
   {
@@ -706,23 +768,44 @@ export const PROJECTS: Lesson[] = [
       const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
       const progOk = !!rom && CPU_PROGRAM.every((w, a) => words[a] === w);
       if (!progOk) return [{ text: rom ? `В ПЗУ — программа из описания: сейчас ${words.map((w, a) => `${a} → ${hex(w)}`).join(", ")}` : "На столе ПЗУ 74S288", ok: false }];
-      const { afterReset, outs, again, hurt } = cpuRun(scene);
-      const want = cpuEmulate(CPU_PROGRAM, CPU_CLOCKS);
-      const bad = outs.findIndex((o, i) => o !== want[i]);
-      const wantAgain = cpuEmulate(CPU_PROGRAM, again.length);
-      const badAgain = again.findIndex((o, i) => o !== wantAgain[i]);
-      const floating = floatingInputs(scene);
-      const shorts = foreignContacts(scene);
-      const shortName = (k: (typeof shorts)[number]) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`;
-      return [
-        { text: "В ПЗУ — программа из описания", ok: true },
-        { text: floating.length ? `Входы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы микросхем куда-то подключены", ok: !floating.length },
-        { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
-        { text: `После RST на выходе 0 — сейчас ${afterReset}`, ok: afterReset === 0 },
-        { text: `Такт за тактом на выходе: ${outs.join(" ")}${bad >= 0 ? ` (на ${bad + 1}-м такте нужно ${want[bad]})` : ""}`, ok: bad < 0 },
-        { text: `RST посреди работы — и снова с начала: ${again.join(" ")}${badAgain >= 0 ? ` (нужно ${wantAgain.join(" ")})` : ""}`, ok: badAgain < 0 },
-        noHurt([...hurt]),
-      ];
+      return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU_PINS.out, (k) => cpuEmulate(CPU_PROGRAM, k), String)];
+    },
+  },
+  {
+    id: "proj-cpu8",
+    project: true,
+    after: "proj-cpu",
+    title: "Процессор 8 бит",
+    about:
+      "Тот же процессор, но числа — восьмиразрядные (0…255): регистр A, сумматор и выход — по 8 бит, перенос за 255 теряется. Команда — 12 бит по одному адресу в двух ПЗУ: в одном — число N (8 бит), в другом — что делать, биты 7…4 как у четырёхразрядного (бит 7 — перейти на адрес N mod 16, бит 6 — вывести A, бит 5 — записать в A, бит 4 — записывается A + N, иначе само N), младшие биты — 0. Адресов по-прежнему 16. Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT7 — площадки J6…J13 (OUT0 — младший); светодиоды — чтобы видеть. Программа проверки — числа: 0 → A5, 1 → 5A, 2 → 01, 3 → FE, 4 → 5A, 5 → 0F, 15 → 01; команды: 0 → 20 (A ← N), 1 → 30 (A ← A + N), 2 → 70 (вывести A и A ← A + N), 3 → 30, 4 → 60 (вывести A и A ← N), 5 → 80 (перейти на N), 15 → C0 (вывести A и перейти на N); остальные адреса в обоих — 00. Проверка сверяет программу, смотрит, что ни один вход не висит в воздухе и медь нигде не задевает чужую, жмёт RST, потом 24 раза CLK и смотрит выход после каждого, потом RST посреди работы. Выход в проверке — в шестнадцатеричном виде.",
+    hints: [
+      "Восемь бит — это два четырёхбитных среза рядом: у каждого свой сумматор, мультиплексор и регистры. Что у срезов общее, а что — своё? И как младший сумматор сообщает старшему, что сумма перевалила за 15?",
+      "Оба ПЗУ читают один и тот же адрес. Какие выводы у них соединить вместе, а какие ведут в разные места? Регистры двух срезов записываются всегда одновременно — нужен ли каждому свой инвертор разрешения?",
+    ],
+    kit: [
+      chip("cnt161"),
+      { part: "other", type: "chip", tool: `chip:${PROM_ID}`, preset: {}, match: { def: PROM_ID }, label: "ПЗУ 74S288", count: 2 },
+      chip("reg173", 4),
+      chip("add4", 2),
+      chip("mux4q", 2),
+      chip("not", 4),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 8 },
+      { part: "resistor", ohms: 1000, count: 8 },
+    ],
+    start: () => cpuBench("proj-cpu8", CPU8_BOARD),
+    check(scene) {
+      const roms = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === PROM_ID);
+      const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+      const words = (c: (typeof roms)[number]) => CPU8_PROGRAM.n.map((_, a) => promWord(c.data, a));
+      const is = (c: (typeof roms)[number], want: number[]) => want.every((w, a) => words(c)[a] === w);
+      const nRom = roms.find((c) => is(c, CPU8_PROGRAM.n));
+      const opRom = roms.find((c) => c !== nRom && is(c, CPU8_PROGRAM.op));
+      if (roms.length < 2) return [{ text: "На столе два ПЗУ 74S288: одно — числа, другое — команды", ok: false }];
+      if (!nRom || !opRom) {
+        const show = (c: (typeof roms)[number]) => `${c.id}: ${words(c).map((w, a) => `${a} → ${hex(w)}`).join(", ")}`;
+        return [{ text: `В ПЗУ — программа из описания (${!nRom ? "не нашлось ПЗУ с числами" : "не нашлось ПЗУ с командами"}): сейчас ${roms.map(show).join("; ")}`, ok: false }];
+      }
+      return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => cpu8Emulate(CPU8_PROGRAM, k), hex)];
     },
   },
 ];

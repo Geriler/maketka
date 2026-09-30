@@ -133,7 +133,8 @@ export function missing(level: Level | Lesson): string[] {
     .map((k) => FUNC_NAMES[k.func]);
   // Память (ПЗУ, ОЗУ) в набор идёт заводской — открывают её свои уровни
   const memory = level.kit.flatMap((k) => (k.part === "other" && k.type === "chip" && k.tool === `chip:${MEMORY_OPENER[0][0]}` && !isDone(MEMORY_OPENER[0][1]) ? ["ПЗУ 74S288"] : k.part === "other" && k.type === "chip" && k.tool === `chip:${MEMORY_OPENER[1][0]}` && !isDone(MEMORY_OPENER[1][1]) ? ["ОЗУ 74LS219"] : []));
-  return [...chips, ...memory];
+  const before = "after" in level && level.after && !isDone(level.after) ? [`проект «${stageById(level.after)?.title ?? level.after}»`] : [];
+  return [...chips, ...memory, ...before];
 }
 
 /** Какой уровень открывает заводскую память: ПЗУ — «ПЗУ на диодах», ОЗУ — «ОЗУ 4 × 4». */

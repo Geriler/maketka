@@ -139,6 +139,7 @@ const PLACE: Record<string, [number, number]> = {
   "proj-lights": [8, 9],
   "proj-sar": [9, 3.6],
   "proj-cpu": [9, 6],
+  "proj-cpu8": [10, 6],
 };
 /**
  * Узлы карты — группы уровней, иначе стрелок не разобрать:
@@ -319,7 +320,9 @@ export class CareerMap {
     }
     // Проекты: от микросхем набора (базовые вентили слева не тянем через всю карту)
     // ПЗУ в наборе — стрелка от уровня, который его открывает
-    for (const pr of PROJECTS) link(pr.id, pr.kit.flatMap((k): LogicFunc[] => (k.part === "chip" ? [k.func] : k.part === "other" && k.type === "chip" ? (k.tool.includes("prom") ? ["rom8"] : k.tool.includes("ram") ? ["ram4"] : []) : [])), (src) => PLACE[src][0] < 4);
+    // Проект, идущий за другим (8-битный процессор за 4-битным), — одна стрелка от него
+    for (const pr of PROJECTS) if (pr.after) edge(pr.after, pr.id, isDone(pr.after));
+    for (const pr of PROJECTS.filter((x) => !x.after)) link(pr.id, pr.kit.flatMap((k): LogicFunc[] => (k.part === "chip" ? [k.func] : k.part === "other" && k.type === "chip" ? (k.tool.includes("prom") ? ["rom8"] : k.tool.includes("ram") ? ["ram4"] : []) : [])), (src) => PLACE[src][0] < 4);
     const nodes = [
       `<g class="node done root" data-node="parts" transform="translate(${at("parts").x} ${at("parts").y})"><rect width="${W}" height="${H}" rx="10"/><text x="14" y="27" class="t">Детали</text><text x="14" y="47" class="s">транзисторы и резисторы</text></g>`,
       ...LESSONS.map((l, i) => {

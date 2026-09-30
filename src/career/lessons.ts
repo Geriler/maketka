@@ -22,6 +22,8 @@ export interface Lesson {
   repair?: true;
   /** Проект: устройство из открытых микросхем; закрыт, пока они не открыты. */
   project?: true;
+  /** Проект, который надо пройти прежде (закрыт до того). */
+  after?: string;
   title: string;
   about: string;
   hints: [string, string];
