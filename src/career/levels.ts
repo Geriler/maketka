@@ -11,7 +11,7 @@ import type { ChipPackage, ChipPinRole } from "../model/breadboard";
 import type { DiodeKind, MosfetKind, TransistorKind } from "../model/types";
 
 /** Логическая функция компонента. */
-export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173" | "bus245" | "rom8";
+export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173" | "bus245" | "rom8" | "ram4";
 
 /** Деталь набора: сколько штук и что именно (тип и номинал). */
 export type KitItem =
@@ -132,6 +132,8 @@ export function zOutputs(func: LogicFunc, bits: boolean[]): boolean[] | undefine
   if (func === "reg8z") return Array(8).fill(bits[1]);
   // 74HC173: отключены все четыре, если хоть один из OE̅1, OE̅2 в единице
   if (func === "reg173") return Array(4).fill(bits[4] || bits[5]);
+  // ОЗУ 4 × 4 (S̅, W̅, …): выходы — только при чтении (S̅ = 0, W̅ = 1)
+  if (func === "ram4") return Array(4).fill(bits[0] || !bits[1]);
   // 74HC245 (OE̅, DIR, A0…A7, B0…B7): выходы A — при DIR = 0, выходы B — при DIR = 1; OE̅ = 1 — все
   // отключены. Отключённый вывод шины — вход (Nexperia 74HC245, таблица 3)
   if (func === "bus245") return [...Array(8).fill(bits[0] || bits[1]), ...Array(8).fill(bits[0] || !bits[1])];
@@ -153,7 +155,7 @@ export function goalMet(g: Goal, m: { width: number; height: number; links: numb
 }
 
 /** Схемы с памятью: выход зависит не только от входов, но и от того, что было раньше. */
-export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017", "reg8z", "cnt1", "cnt161", "reg173"];
+export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017", "reg8z", "cnt1", "cnt161", "reg173", "ram4"];
 
 /**
  * Сегменты a…g цифр 0…9 — как у 74HC4511 по таблице TI (SCHS279E): шестёрка без верхней черты,
@@ -230,6 +232,15 @@ export function seqNext(func: LogicFunc, q: number, prev: boolean[] | undefined,
   // 74HC161 (CLK, CLR̅, LOAD̅, ENP, ENT, A…D): то же для четырёх разрядов — загрузка главнее счёта,
   // счёт — только при ENP = ENT = 1 (TI SCLS297D)
   if (func === "cnt161") return !bits[1] ? 0 : rising(prev, bits, 0) ? (!prev![2] ? num(prev!.slice(5, 9)) : prev![3] && prev![4] ? (q + 1) & 15 : q) : q;
+  // ОЗУ 4 × 4 (S̅, W̅, A0, A1, D1…D4): слово k — в разрядах 4k…4k+3. Запись кончается, когда
+  // пропадает «S̅ = 0 и W̅ = 0» — тогда в ячейку по прежнему адресу ложатся прежние данные
+  // (как у настоящих ОЗУ: данные должны стоять до конца импульса записи)
+  if (func === "ram4") {
+    const writing = (b: boolean[]) => !b[0] && !b[1];
+    if (!prev || !writing(prev) || writing(bits)) return q;
+    const a = num(prev.slice(2, 4));
+    return (q & ~(15 << (4 * a))) | (num(prev.slice(4, 8)) << (4 * a));
+  }
   // 74HC173 (CP, MR, E̅1, E̅2, OE̅1, OE̅2, D0…D3): MR = 1 — ноль сразу; по фронту CP при E̅1 = E̅2 = 0
   // берёт D, иначе хранит (Nexperia 74HC173, таблица 3)
   if (func === "reg173") return bits[1] ? 0 : rising(prev, bits, 0) ? (!prev![2] && !prev![3] ? num(prev!.slice(6, 10)) : q) : q;
@@ -260,6 +271,7 @@ export function seqOuts(func: LogicFunc, q: number, bits: boolean[]): boolean[] 
   // 74HC161: QA…QD и перенос RCO = ENT при счёте 15
   if (func === "cnt161") return [...[0, 1, 2, 3].map((k) => !!(q & (1 << k))), q === 15 && bits[4]];
   if (func === "reg173") return [0, 1, 2, 3].map((k) => !!(q & (1 << k)));
+  if (func === "ram4") return [0, 1, 2, 3].map((k) => !!((q >> (4 * num(bits.slice(2, 4)))) & (1 << k)));
   // Джонсон: A…E, затем Ā…Ē
   if (func === "johnson") return [0, 1, 2, 3, 4].map((k) => !!(q & (1 << k))).concat([0, 1, 2, 3, 4].map((k) => !(q & (1 << k))));
   // 4017: Q0…Q9 — единица у номера счёта; Q5-9̅ — единица при счёте 0…4
@@ -332,6 +344,7 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
     case "cnt1":
     case "cnt161":
     case "reg173":
+    case "ram4":
     case "bcd7":
     case "timer":
     case "sreg595":
@@ -488,6 +501,21 @@ const STEP = "Такой микросхемы не выпускают — это
  * (единица — сегменты могут гореть), резисторы 10 кОм от S к сегментам и диоды от сегмента к
  * выходу дешифратора той цифры, где сегмент не горит.
  */
+/** Шаги проверки ОЗУ 4 × 4: S̅, W̅, адрес, данные — строкой S̅ W̅ A0 A1 D1…D4. */
+const ramStep = (s: number, w: number, a: number, d: number) => `${s}${w}${a & 1}${(a >> 1) & 1}${d & 1}${(d >> 1) & 1}${(d >> 2) & 1}${(d >> 3) & 1}`;
+const RAM4_STEPS = [
+  ramStep(1, 1, 0, 0),
+  // Запись в каждую ячейку (второй шаг — конец записи и сразу чтение того же адреса)
+  ...[[0, 0xa], [1, 0x5], [2, 0xc], [3, 0x3]].flatMap(([a, d]) => [ramStep(0, 0, a, d), ramStep(0, 1, a, d)]),
+  // Чтение всех ячеек (на D — что угодно)
+  ...[0, 1, 2, 3].map((a) => ramStep(0, 1, a, 0xf)),
+  // Запись, законченная по S̅, затем чтение
+  ramStep(0, 0, 2, 0x9), ramStep(1, 0, 2, 0x9), ramStep(1, 1, 2, 0), ramStep(0, 1, 2, 0),
+  // При S̅ = 1 не пишется
+  ramStep(1, 0, 1, 0xf), ramStep(1, 1, 1, 0xf), ramStep(0, 1, 1, 0),
+  ramStep(0, 1, 0, 0), ramStep(1, 1, 0, 0),
+];
+
 /** Содержимое ПЗУ на диодах (уровень rom8): слово D3…D0 по адресам 0…7. */
 export const ROM8 = [0xa, 0x3, 0x5, 0xc, 0x7, 0x0, 0xf, 0x9];
 
@@ -2738,6 +2766,61 @@ export const LEVELS: Level[] = [
     ],
     recipe: ROM8_RECIPE,
   },
+  {
+    id: "ram4",
+    func: "ram4",
+    part: "ОЗУ 4 × 4",
+    intermediate: true,
+    title: "Оперативная память на регистрах",
+    about:
+      "Память, в которую можно писать: четыре слова по 4 бита, адрес — A1 A0. Пока S̅ = 0 и W̅ = 0 — запись: слово с D1…D4 уйдёт в выбранную ячейку, а запомнится то, что стояло на D в момент, когда запись кончилась (W̅ или S̅ вернулся в единицу). S̅ = 0 и W̅ = 1 — чтение: слово выбранной ячейки на Q1…Q4. В остальное время (S̅ = 1 или идёт запись) выходы отключены — третье состояние. Выводы — как у 74LS219, только без A2 и A3: 1 A0, 2 S̅, 3 W̅, 4 D1, 5 Q1, 6 D2, 7 Q2, 8 GND, 9 Q3, 10 D3, 11 Q4, 12 D4, 13–14 не подключены, 15 A1, 16 VCC. Проверяется последовательностью: запись во все ячейки, чтение, запись, законченная по S̅, и попытка записать при S̅ = 1. Такой микросхемы не выпускают — это учебная ступенька. Пройдёте — откроется ОЗУ 74LS219 на 16 слов.",
+    hints: [
+      "Каждая ячейка — регистр, и у регистров из набора выходы можно отключать. Что тогда можно сделать с их выходами и входами — все вместе?",
+      "Регистру нужен фронт такта — ровно тогда, когда кончается запись в его ячейку. А его выходы — только когда читают именно его. Дешифратор даёт ноль на выбранном выходе, пока он разрешён: что подать на его разрешающие входы в каждом случае?",
+    ],
+    package: "DIP",
+    roles: ["in", "in", "in", "in", "out", "in", "out", "gnd", "out", "in", "out", "in", "nc", "nc", "in", "vcc"],
+    names: ["A0", "S̅", "W̅", "D1", "Q1", "D2", "Q2", "", "Q3", "D3", "Q4", "D4", "", "", "A1", ""],
+    io: { inputs: [2, 3, 1, 15, 4, 6, 10, 12], outputs: [5, 7, 9, 11] },
+    room: 2000,
+    // S̅ W̅ A0 A1 D1…D4
+    sequence: seq(...RAM4_STEPS),
+    kit: [
+      { part: "chip", func: "reg173", count: 4 },
+      { part: "chip", func: "dec3", count: 2 },
+    ],
+    recipe: {
+      parts: [
+        // Поле DIP-16 — 33 столбца: по три микросхемы в ряд
+        ...[0, 1, 2].map((i) => ic(`M${i}`, "reg173", 16, "D", 2 + 9 * i)),
+        ic("M3", "reg173", 16, "H", 2),
+        ic("XW", "dec3", 16, "H", 11),
+        ic("XR", "dec3", 16, "H", 20),
+      ],
+      nets: [
+        ...power("P16", "P8", [...[0, 1, 2, 3].map((i) => ({ id: `M${i}`, vcc: 16, gnd: 8 })), { id: "XW", vcc: 16, gnd: 8 }, { id: "XR", vcc: 16, gnd: 8 }]),
+        // Адрес — на оба дешифратора; третий разряд — ноль
+        ["P1", "XW.1", "XR.1"],
+        ["P15", "XW.2", "XR.2"],
+        ["P8", "XW.3", "XR.3", "XR.5", ...[0, 1, 2, 3].flatMap((i) => [`M${i}.2`, `M${i}.9`, `M${i}.10`, `M${i}.15`])],
+        // Запись: дешифратор разрешён при S̅ = 0 и W̅ = 0 — выбранный выход в нуле, в конце записи — фронт
+        ["P16", "XW.6"],
+        ["P2", "XW.4", "XR.4"],
+        ["P3", "XW.5", "XR.6"],
+        // Регистры на общей шине: входы D и выходы Q — все вместе
+        ["P4", ...[0, 1, 2, 3].map((i) => `M${i}.14`)],
+        ["P6", ...[0, 1, 2, 3].map((i) => `M${i}.13`)],
+        ["P10", ...[0, 1, 2, 3].map((i) => `M${i}.12`)],
+        ["P12", ...[0, 1, 2, 3].map((i) => `M${i}.11`)],
+        ["P5", ...[0, 1, 2, 3].map((i) => `M${i}.3`)],
+        ["P7", ...[0, 1, 2, 3].map((i) => `M${i}.4`)],
+        ["P9", ...[0, 1, 2, 3].map((i) => `M${i}.5`)],
+        ["P11", ...[0, 1, 2, 3].map((i) => `M${i}.6`)],
+        // Ячейка k: такт — от дешифратора записи, разрешение выходов — от дешифратора чтения
+        ...[15, 14, 13, 12].flatMap((y, i) => [[`XW.${y}`, `M${i}.7`], [`XR.${y}`, `M${i}.1`]]),
+      ],
+    },
+  },
   // ─── Числа: разряд компаратора → 74HC85; 74HC595; проект АЛУ ─────────────────────────────
   {
     id: "mag1",
@@ -3000,6 +3083,7 @@ export const FUNC_NAMES: Record<LogicFunc, string> = {
   reg173: "Регистр 4 бит с тремя состояниями",
   bus245: "Двунаправленный буфер шины",
   rom8: "ПЗУ 8 × 4 на диодах",
+  ram4: "ОЗУ 4 × 4",
   timer: "Таймер 555",
   mag1: "Разряд компаратора",
   mag4: "Компаратор чисел 4 бит",

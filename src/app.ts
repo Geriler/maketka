@@ -59,7 +59,7 @@ import { ProjectsPanel } from "./ui/projects";
 import { loadLibrary, saveLibrary } from "./chips/library";
 import { caseOf, chipInner, dipSize, packageChip, packageProblems, spaceUsed } from "./chips/package";
 import { chipsUsed, libraryChips, referenceList, resolveChip, setCareerChips, setChipToolSource, setLibrary, setReference } from "./chips/registry";
-import { memoryChips } from "./chips/memory";
+import { RAM_ID, memoryChips } from "./chips/memory";
 import { checkLevel, levelScene, publicChips, referenceChips, type CheckResult } from "./career/build";
 import { goalMet, levelById, type Level } from "./career/levels";
 import type { Lesson } from "./career/lessons";
@@ -1112,7 +1112,7 @@ export class App {
     document.body.classList.toggle("mode-career", this.mode === "career");
     // Учебные промежуточные компоненты — только в наборах уровней, не в мастерской и не в песочнице
     // Прошиваемое ПЗУ в карьере открывает уровень «ПЗУ на диодах»
-    setChipToolSource(this.mode === "career" ? () => [...publicChips(careerDefs()), ...(isDone("rom8") ? memoryChips() : [])] : () => [...publicChips(referenceList()), ...libraryChips()]);
+    setChipToolSource(this.mode === "career" ? () => [...publicChips(careerDefs()), ...memoryChips().filter((d) => isDone(d.id === RAM_ID ? "ram4" : "rom8"))] : () => [...publicChips(referenceList()), ...libraryChips()]);
     setKitTools(kitTools(this.scene));
     renderToolButtons(this.ui.tools);
     this.onTool?.(this.tool);

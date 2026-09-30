@@ -11,7 +11,7 @@ import { type ComponentView, blackPlastic, disposeGroup, freeTransform, lead, mm
 import { kv, pill, selectField } from "../view/panel";
 import { PIN_ROLES } from "../chips/roles";
 import { chipAbout, chipKind } from "../chips/about";
-import { PROM_ID, PROM_WORDS, hex2, parseWord, promWord } from "../chips/memory";
+import { PROM_ID, PROM_WORDS, RAM_ID, hex2, parseWord, promWord, ramGarbage } from "../chips/memory";
 import { toolFor, type PartDef } from "./types";
 
 /** Подпись вывода корпуса: имя, у неподключённого — NC. */
@@ -151,7 +151,8 @@ export const chip: PartDef<Chip> = {
       const levels = inputLevels(c, model, sim, prev);
       const open = levels.map((l, i) => (l === undefined ? i : -1)).filter((i) => i >= 0);
       const tries = open.length > 4 ? [] : Array.from({ length: 1 << open.length }, (_, m) => levels.map((l, i) => l ?? !!(m & (1 << open.indexOf(i)))));
-      const results = tries.map((bits) => model.logic(bits, prev, c.data));
+      const data = memData(c, model, sim);
+      const results = tries.map((bits) => model.logic(bits, prev, data));
       if (model.state && tries.length === 1) {
         sim.junction.set(`${c.id}:rs`, model.state(tries[0], prev));
         sim.junction.set(`${c.id}:ri`, tries[0].reduce((m, b, i) => m | (b ? 1 << i : 0), 0));
@@ -198,6 +199,16 @@ export const chip: PartDef<Chip> = {
   // Расчёт установился: запомнить входы и выходы — по ним триггер помнит своё и узнаёт фронт
   commit(c, sim) {
     const model = sim.modelOf(c.id);
+    // ОЗУ: без питания содержимое пропадает; с питанием — запись, пока держится сигнал записи
+    if (model?.ram) {
+      const span = supply(c, model, sim) ?? 0;
+      if (span < RAM_KEEP) sim.memory.delete(`${c.id}:ram`);
+      else {
+        const lv = inputLevels(c, model, sim, sim.memory.get(`${c.id}:seq`) as ModelState | undefined);
+        const w = lv.every((l) => l !== undefined) ? model.ram.write(lv as boolean[]) : undefined;
+        if (w) memData(c, model, sim)![w[0]] = w[1];
+      }
+    }
     const q = sim.junction.get(`${c.id}:q`);
     if (!model || q === undefined || q < 0) return;
     const looped = !!sim.junction.get(`${c.id}:rl`);
@@ -230,7 +241,7 @@ export const chip: PartDef<Chip> = {
   power: () => 0,
   readout: (c, sim) => {
     const def = resolveChip(sim.scene, c.def);
-    return `<div class="kv"><span>${def ? `${def.name}, ${packageName(def.package, def.pins)}` : "Нет описания микросхемы"}</span><span>${def?.id === PROM_ID ? "по даташиту" : def ? countShort(countChip(def, sim.scene)) : ""}</span></div>`;
+    return `<div class="kv"><span>${def ? `${def.name}, ${packageName(def.package, def.pins)}` : "Нет описания микросхемы"}</span><span>${def?.id === PROM_ID || def?.id === RAM_ID ? "по даташиту" : def ? countShort(countChip(def, sim.scene)) : ""}</span></div>`;
   },
   status: (c, sim) => (resolveChip(sim.scene, c.def) ? pill("ok", "РАБОТАЕТ") : pill("bad", "НЕТ ОПИСАНИЯ — ОТКРОЙТЕ ПРОЕКТ, ГДЕ ОНА ЕСТЬ")),
 
@@ -254,6 +265,31 @@ export const chip: PartDef<Chip> = {
       const v = volts(i);
       return kv(`${i + 1} ${chipPinName(def, i)}`, v === undefined ? "не подключён" : formatSI(v, "В"));
     }).join("");
+    // ОЗУ: содержимое — только посмотреть (оно в расчёте и без питания пропадает)
+    if (def.id === RAM_ID) {
+      const g = volts(7);
+      const high = (p: number) => {
+        const v = volts(p - 1);
+        return v !== undefined && g !== undefined && v - g > 1.4;
+      };
+      const addr = [1, 15, 14, 13].reduce((m, p, i) => m | (high(p) ? 1 << i : 0), 0);
+      const mem = sim.memory.get(`${c.id}:ram`) as number[] | undefined;
+      const mode = !mem ? "нет питания" : high(2) ? "не выбрана (S̅ = 1)" : high(3) ? `чтение, адрес ${addr}` : `запись, адрес ${addr}`;
+      const cells = Array.from({ length: 16 }, (_, a) => {
+        const w = mem?.[a];
+        return `<label class="rom-cell${mem && a === addr && !high(2) ? " now" : ""}" title="Адрес ${a} (${a.toString(2).padStart(4, "0")})${w === undefined ? "" : `: ${w.toString(2).padStart(4, "0")}`}"><span>${a.toString(16).toUpperCase()}</span><input class="btn" type="text" readonly value="${w === undefined ? "—" : w.toString(16).toUpperCase()}" aria-label="Слово по адресу ${a}" /></label>`;
+      }).join("");
+      return {
+        title: def.name,
+        body: `<p>${chipAbout(def.id) ?? ""}</p>
+          ${kv("Сейчас", mode)}
+          <div class="eyebrow">содержимое (адрес → слово, шестнадцатеричное)</div>
+          <div class="rom-grid">${cells}</div>
+          <p class="sub">Содержимое меняют только сигналы на выводах. Без питания оно пропадает, после включения в ячейках что попало — как у настоящей.</p>
+          <div class="eyebrow">выводы (потенциал)</div>${rows}
+          <p class="sub">Заводская, по даташиту SN74LS219A: выходы и входы TTL, питание 4,5–5,5 В, потребляет около 35 мА.</p>`,
+      };
+    }
     // ПЗУ: вместо начинки — таблица содержимого (прошивка), текущее слово подсвечено
     if (def.id === PROM_ID) {
       const high = (p: number) => {
@@ -310,6 +346,27 @@ function defSupply(c: Chip, def: ChipDef, sim: Simulation): number | undefined {
  * определён (так ведёт себя висящий). Триггер Шмитта (model.hyst): выше верхнего порога — единица,
  * ниже нижнего — ноль, между — как было на прошлом расчёте.
  */
+/** Ниже такого питания, В, ОЗУ забывает всё (у настоящих TTL-ОЗУ — задолго до нуля). */
+const RAM_KEEP = 2;
+
+/**
+ * Содержимое памяти для модели: у ПЗУ — прошивка этой микросхемы (Chip.data), у ОЗУ — то, что
+ * лежит в расчёте; нет (только что включили) — мусор, своё для каждого включения.
+ */
+function memData(c: Chip, model: ChipModel, sim: Simulation): number[] | undefined {
+  if (!model.ram) return c.data;
+  const key = `${c.id}:ram`;
+  let d = sim.memory.get(key) as number[] | undefined;
+  if (!d) {
+    const n = ((sim.memory.get(`${c.id}:ramOn`) as number | undefined) ?? 0) + 1;
+    sim.memory.set(`${c.id}:ramOn`, n);
+    const seed = [...c.id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) ^ (n * 7919);
+    d = ramGarbage(model.ram.words, model.outputs.length, seed);
+    sim.memory.set(key, d);
+  }
+  return d;
+}
+
 /** Состояние схемы с памятью после последнего события этого шага (в sim.junction — откатывается вместе с шагом). */
 function runState(c: Chip, model: ChipModel, sim: Simulation): ModelState | undefined {
   const base = sim.memory.get(`${c.id}:seq`) as ModelState | undefined;
@@ -317,7 +374,7 @@ function runState(c: Chip, model: ChipModel, sim: Simulation): ModelState | unde
   const ri = sim.junction.get(`${c.id}:ri`);
   if (rs === undefined || ri === undefined) return base;
   const inputs = model.inputs.map((_, i) => !!(ri & (1 << i)));
-  return { inputs, outputs: model.logic(inputs, base, c.data), state: rs };
+  return { inputs, outputs: model.logic(inputs, base, memData(c, model, sim)), state: rs };
 }
 
 function inputLevels(c: Chip, model: ChipModel, sim: Simulation, prev?: ModelState): (boolean | undefined)[] {
