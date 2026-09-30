@@ -41,6 +41,11 @@ export interface Hole {
   d?: number;
   /** Круглая площадка с отверстием (выводная деталь на плате под SMD). */
   round?: boolean;
+  /**
+   * Медь площадки только с одной стороны: SMD-площадка — сверху, узел дорожки — на своей стороне.
+   * Нет — с обеих: отверстие металлизировано (выводные детали, переходы, площадки печатной платы).
+   */
+  side?: "top" | "bottom";
 }
 
 export const COLUMNS = 30;
@@ -76,6 +81,8 @@ export interface BoardSpec {
   smd?: boolean;
   /** Посадочные места SMD-деталей (у платы под SMD и у корпуса с полем под SMD). */
   seats?: Seat[];
+  /** Печатная плата или плата под SMD с медью с обеих сторон (дорожки и снизу, переходы между сторонами). */
+  layers?: 2;
 }
 
 /**
@@ -89,6 +96,8 @@ export interface Seat {
   x: number;
   z: number;
   rot: number;
+  /** Только у узла дорожки (NODE) на двусторонней плате: на какой стороне узел; нет — сверху. */
+  side?: "bottom";
 }
 
 /**
@@ -96,10 +105,14 @@ export interface Seat {
  * SOT-23-5/6, SO-n (SOIC, шаг 1,27 мм), двухвыводные чипы 1206…0402. Выводные — отверстия
  * с площадками на шаге 2,54 мм: DIP-n (ряды через 7,62 мм), TH3 (три в ряд: TO-92, TO-220,
  * потенциометр), TH2-k (два вывода через k шагов: резистор, диод, светодиод…). NODE — узел
- * дорожки: точка излома или развилки, без детали.
+ * дорожки: точка излома или развилки, без детали. VIA — переходное отверстие двусторонней платы:
+ * металлизированное отверстие Ø 0,3 мм в кольце Ø 0,6 мм, соединяет медь сторон.
  */
 export type SmdFootprint = "SOT-23" | "SOT-23-5" | "SOT-23-6" | "SOT-143" | "SO-4" | "SO-6" | "SO-8" | "SO-14" | "SO-16" | "SO-18" | "SO-20" | "1206" | "0805" | "0603" | "0402";
-export type Footprint = SmdFootprint | `DIP-${number}` | "TH3" | `TH2-${number}` | "DISP-10" | "NODE";
+export type Footprint = SmdFootprint | `DIP-${number}` | "TH3" | `TH2-${number}` | "DISP-10" | "NODE" | "VIA";
+
+/** Место без детали — точка меди: узел дорожки или переход. */
+export const isCopperPoint = (fp: Footprint): boolean => fp === "NODE" || fp === "VIA";
 
 /** Выводное посадочное место (отверстия), а не SMD. */
 export const isThtFootprint = (fp: Footprint): boolean => fp.startsWith("DIP-") || fp.startsWith("TH") || fp === "DISP-10";
@@ -117,6 +130,9 @@ interface PadMm {
 const TH_PAD = 1.8;
 /** Узел дорожки: точка шириной с дорожку. */
 const NODE_PAD = 0.3;
+/** Переход: кольцо меди Ø 0,6 мм вокруг отверстия Ø 0,3 мм. */
+export const VIA_PAD = 0.6;
+export const VIA_DRILL = 0.3;
 
 /** Двухвыводные чипы: расстояние от центра до центра площадки и размер площадки, мм. */
 const CHIP_PADS: Record<string, { c: number; w: number; d: number; body: [number, number, number] }> = {
@@ -135,6 +151,7 @@ const SOW = { pitch: 1.27, row: 4.65, w: 0.6, d: 2.0 };
 /** Площадки корпуса по порядку выводов (1…n), мм. */
 export function footprintPads(fp: Footprint): PadMm[] {
   if (fp === "NODE") return [{ x: 0, z: 0, w: NODE_PAD, d: NODE_PAD, round: true }];
+  if (fp === "VIA") return [{ x: 0, z: 0, w: VIA_PAD, d: VIA_PAD, round: true }];
   const th = (x: number, z: number): PadMm => ({ x: x * 2.54, z: z * 2.54, w: TH_PAD, d: TH_PAD, round: true });
   if (fp === "TH3") return [th(-1, 0), th(0, 0), th(1, 0)];
   // Индикатор: выводы 1–5 ближним рядом, 6–10 обратно дальним, ряды через 15,24 мм
@@ -166,7 +183,7 @@ export function footprintPads(fp: Footprint): PadMm[] {
 /** Корпус детали: длина вдоль ряда выводов, ширина, высота, мм. */
 export function footprintBody(fp: Footprint): [number, number, number] {
   // У выводных корпус над платой может быть любым — место считается по площадкам
-  if (fp === "NODE" || isThtFootprint(fp)) return [0, 0, 0];
+  if (isCopperPoint(fp) || isThtFootprint(fp)) return [0, 0, 0];
   const chip = CHIP_PADS[fp];
   if (chip) return chip.body;
   if (fp === "SOT-23" || fp === "SOT-143") return [2.9, 1.3, 1.0];
@@ -229,9 +246,9 @@ export function seatProblem(b: BoardSpec, seat: Seat): string | undefined {
     return b.kind === "chip" ? "деталь вышла бы за поле корпуса" : "деталь вышла бы за край платы (у ближнего края — площадки для проводов)";
   }
   // Узел дорожки ничего не занимает
-  if (seat.fp === "NODE") return undefined;
+  if (isCopperPoint(seat.fp)) return undefined;
   for (const o of b.seats ?? []) {
-    if (o.id === seat.id || o.fp === "NODE") continue;
+    if (o.id === seat.id || isCopperPoint(o.fp)) continue;
     const q = seatRect(b, o);
     if (r.x0 < q.x1 - eps && q.x0 < r.x1 - eps && r.z0 < q.z1 - eps && q.z0 < r.z1 - eps) return `там уже стоит ${o.id}`;
   }
@@ -517,7 +534,9 @@ function seatHoles(b: BoardSpec): Hole[] {
   return (b.seats ?? []).flatMap((seat) =>
     seatPads(b, seat).map((p, i): Hole => {
       const id = seatHole(b, seat.id, i + 1);
-      return { id, x: p.x, y: PCB_HEIGHT, z: p.z, node: `pad:${id}`, kind: "pad", board: "pcb", boardId: b.id, seat: seat.id, seatPin: i + 1, w: p.w, d: p.d, ...(p.round ? { round: true } : {}) };
+      // Медь SMD-площадки и узла — с одной стороны; у отверстий (выводные, переходы) — с обеих
+      const side = seat.fp === "NODE" ? (seat.side ?? "top") : isThtFootprint(seat.fp) || seat.fp === "VIA" ? undefined : "top";
+      return { id, x: p.x, y: PCB_HEIGHT, z: p.z, node: `pad:${id}`, kind: "pad", board: "pcb", boardId: b.id, seat: seat.id, seatPin: i + 1, w: p.w, d: p.d, ...(p.round ? { round: true } : {}), ...(side ? { side } : {}) };
     }),
   );
 }
@@ -605,7 +624,10 @@ export function holeLabel(id: string): string {
   const h = HOLE_BY_ID.get(id);
   if (!h) return id;
   if (h.pin) return `вывод ${h.pin} ${chipPinName(boardById(h.boardId), h.pin - 1)}`;
-  if (h.seat) return boardById(h.boardId)?.seats?.find((x) => x.id === h.seat)?.fp === "NODE" ? `узел дорожки ${h.seat}` : `площадка ${h.seatPin} под ${h.seat}`;
+  if (h.seat) {
+    const fp = boardById(h.boardId)?.seats?.find((x) => x.id === h.seat)?.fp;
+    return fp === "NODE" ? `узел дорожки ${h.seat}${h.side === "bottom" ? " (снизу)" : ""}` : fp === "VIA" ? `переход ${h.seat}` : `площадка ${h.seatPin} под ${h.seat}`;
+  }
   if (h.kind === "pad" && /^s\d*:/.test(id)) {
     const m = id.match(/^s(\d*):(.*)$/)!;
     return `${m[1] ? `плата под SMD ${m[1]}, ` : ""}площадка ${m[2]}`;
@@ -635,7 +657,7 @@ const ROLE_NAMES: Record<ChipPinRole, string> = { nc: "NC", in: "IN", out: "OUT"
  * Площадки печатной платы, через которые проходит отрезок от a до b (включая концы), по порядку.
  * Медь дорожки, прошедшей по площадке, с ней соединена — поэтому отрезок делится в этих точках.
  */
-export function padsAlong(aId: string, bId: string): string[] {
+export function padsAlong(aId: string, bId: string, side: "top" | "bottom" = "top"): string[] {
   const a = HOLE_BY_ID.get(aId)!;
   const b = HOLE_BY_ID.get(bId)!;
   const dx = b.x - a.x;
@@ -643,7 +665,8 @@ export function padsAlong(aId: string, bId: string): string[] {
   const len2 = dx * dx + dz * dz;
   const t = (h: Hole) => ((h.x - a.x) * dx + (h.z - a.z) * dz) / len2;
   const on = HOLES.filter((h) => {
-    if (h.boardId !== a.boardId) return false;
+    // Медь другой стороны (SMD-площадка для нижней дорожки) дорожку не делит
+    if (h.boardId !== a.boardId || (h.id !== aId && h.id !== bId && !padOnSide(h, side))) return false;
     const u = t(h);
     if (u < -1e-9 || u > 1 + 1e-9) return false;
     // Расстояние от центра площадки до линии дорожки меньше радиуса площадки (0,36 шага);
@@ -677,6 +700,16 @@ function segmentHitsRect(a: Hole, b: Hole, r: Hole): boolean {
 }
 
 /** Дорожка на плате под SMD (или на поле корпуса под SMD) — тонкая, 0,3 мм. */
+/** Двусторонняя ли плата, на которой отверстие. */
+export function twoSided(holeId: string): boolean {
+  return boardById(HOLE_BY_ID.get(holeId)?.boardId ?? "")?.layers === 2;
+}
+
+/** Достаёт ли медь стороны side до площадки (у металлизированных отверстий — с обеих). */
+export function padOnSide(h: Hole, side: "top" | "bottom"): boolean {
+  return !h.side || h.side === side;
+}
+
 export function fineTrace(aId: string): boolean {
   return isSmdBoard(boardById(HOLE_BY_ID.get(aId)?.boardId ?? ""));
 }

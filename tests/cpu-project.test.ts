@@ -116,35 +116,39 @@ describe("проект «Процессор»", () => {
     expect(steps.every((x) => x.ok), text(steps)).toBe(false);
   }, 300000);
 
-  // Разводка на плате под SMD (сделана скриптом-трассировщиком): дорожки, узлы и перемычки-мостики
-  // над чужими дорожками. Микросхемы в ней — «career:…» (открытые игроком), здесь — эталонные «ref:…».
+  // Разводка на двусторонней плате под SMD (сделана скриптом-трассировщиком): дорожки сверху, где
+  // сверху не пройти — снизу, между сторонами — переходы. Микросхемы в ней — «career:…» (открытые
+  // игроком), здесь — эталонные «ref:…».
   const smdBuild = (drop?: string): Scene => {
     const s = PROJECTS.find((p) => p.id === "proj-cpu")!.start();
     s.boards = [structuredClone(cpuSmd.board) as NonNullable<Scene["boards"]>[number]];
     s.components.push(...(structuredClone(cpuSmd.components) as Component[]).map((c) => (c.type === "chip" ? { ...c, def: c.def.replace(/^career:/, "ref:") } : c)));
-    s.traces = structuredClone(cpuSmd.traces);
+    s.traces = (structuredClone(cpuSmd.traces) as NonNullable<Scene["traces"]>).filter((t) => t.id !== drop);
     s.wires.push(...(structuredClone(cpuSmd.wires) as Scene["wires"]).filter((w) => w.id !== drop));
     s.chips = allChips;
     applyBoards(s.boards!);
     return s;
   };
-  it("разводка на плате под SMD: все микросхемы в SOIC/SOT-23, перемычки прямые, выходы — на J6…J9", () => {
+  it("разводка: плата двусторонняя, микросхемы в SOIC/SOT-23, перемычек нет, нижние дорожки — между переходами, выходы — на J6…J9", () => {
     const s = smdBuild();
     expect(s.boards![0].kind).toBe("smd");
+    expect(s.boards![0].layers).toBe(2);
     const chips = s.components.filter((c) => c.type === "chip") as (Component & { package: string; smd?: boolean })[];
     expect(chips.length).toBe(10);
     expect(chips.every((c) => c.placement.mode === "board" && (c.package !== "DIP" || c.smd === true))).toBe(true);
-    const jumpers = cpuSmd.wires;
-    expect(jumpers.length).toBeGreaterThan(0);
-    expect(jumpers.every((w) => w.shape === "flat" && "hole" in w.a && "hole" in w.b)).toBe(true);
+    expect(cpuSmd.wires).toEqual([]);
+    const bottom = s.traces!.filter((t) => t.side === "bottom");
+    expect(bottom.length).toBeGreaterThan(0);
+    const vias = new Set(s.boards![0].seats!.filter((x) => x.fp === "VIA").map((x) => `s:${x.id}.1`));
+    expect(bottom.every((t) => vias.has(t.a) && vias.has(t.b))).toBe(true);
     expect(CPU_PINS.out).toEqual(["s:J6", "s:J7", "s:J8", "s:J9"]);
   });
   it("разводка на плате под SMD проходит проверку", () => {
     const steps = check(smdBuild());
     expect(steps.every((x) => x.ok), text(steps)).toBe(true);
   }, 300000);
-  it("разводка на плате под SMD без одной перемычки — не проходит", () => {
-    const steps = check(smdBuild("WJ5"));
+  it("разводка без одной нижней дорожки — не проходит", () => {
+    const steps = check(smdBuild("TB5"));
     expect(steps.every((x) => x.ok), text(steps)).toBe(false);
   }, 300000);
   it("дорожка поперёк чужой площадки (J1 → J3 через J2) — медь замкнула цепи, не проходит", () => {

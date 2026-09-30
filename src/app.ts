@@ -21,6 +21,8 @@ import {
   seatProblem,
   seatPads,
   isThtFootprint,
+  isCopperPoint,
+  padOnSide,
   nextBoardId,
   packageName,
   parsePackage,
@@ -46,6 +48,7 @@ import {
   type Scene,
   type Wire,
   type WireBend,
+  type CopperSide,
   type WireShape,
 } from "./model/types";
 import { formatSI } from "./sim/resistorCodes";
@@ -555,7 +558,7 @@ export class App {
     this.wireViews.clear();
     this.traceViews.clear();
     for (const t of this.scene.traces ?? []) {
-      const tv = buildTraceView(t.id, HOLE_BY_ID.get(t.a)!, HOLE_BY_ID.get(t.b)!);
+      const tv = buildTraceView(t.id, HOLE_BY_ID.get(t.a)!, HOLE_BY_ID.get(t.b)!, t.side);
       this.traceViews.set(t.id, tv);
       this.world.traceLayer.add(tv.mesh);
     }
@@ -1397,11 +1400,13 @@ export class App {
   private traceNode(board: BoardSpec, point: THREE.Vector3): Hole | undefined {
     const b = (this.scene.boards ?? []).find((x) => x.id === board.id)!;
     const x = snapSeat(point.x - b.x), z = snapSeat(point.z - b.z);
-    const existing = (b.seats ?? []).find((s) => s.fp === "NODE" && s.x === x && s.z === z);
+    // Узел своей стороны или переход (он на обеих) в этой точке — уже есть
+    const side = b.layers === 2 ? this.traceSide : "top";
+    const existing = (b.seats ?? []).find((s) => s.x === x && s.z === z && (s.fp === "VIA" || (s.fp === "NODE" && (s.side ?? "top") === side)));
     if (existing) return HOLE_BY_ID.get(seatHole(b, existing.id, 1));
     let n = 1;
     while ((b.seats ?? []).some((s) => s.id === `n${n}`)) n++;
-    const seat: Seat = { id: `n${n}`, fp: "NODE", x, z, rot: 0 };
+    const seat: Seat = { id: `n${n}`, fp: "NODE", x, z, rot: 0, ...(side === "bottom" ? { side: "bottom" as const } : {}) };
     if (seatProblem(b, seat)) return undefined;
     b.seats = [...(b.seats ?? []), seat];
     applyBoards(this.scene.boards ?? []);
@@ -1417,7 +1422,7 @@ export class App {
     if (this.pendingPad) used.add(this.pendingPad.id);
     let changed = false;
     for (const b of this.scene.boards ?? []) {
-      const keep = (b.seats ?? []).filter((s) => s.fp !== "NODE" || used.has(seatHole(b, s.id, 1)));
+      const keep = (b.seats ?? []).filter((s) => !isCopperPoint(s.fp) || used.has(seatHole(b, s.id, 1)));
       if (b.seats && keep.length !== b.seats.length) {
         b.seats = keep;
         changed = true;
@@ -1653,6 +1658,8 @@ export class App {
         this.rotate();
       } else if (e.key === "f" || e.key === "F" || e.key === "а" || e.key === "А") {
         this.flip(this.selected ?? this.picked);
+      } else if (this.tool === "trace" && (e.key === "v" || e.key === "V" || e.key === "м" || e.key === "М")) {
+        this.switchTraceSide();
       } else if (TOOL_KEYS[e.key]) {
         this.setTool(TOOL_KEYS[e.key]);
       }
@@ -1665,6 +1672,36 @@ export class App {
 
   /** Форма новой перемычки, если концы не на одной линии: буквой Г (сначала вдоль ряда или столбца) или прямо. */
   private wireBend: WireBend = "x";
+
+  /** Сторона новых дорожек на двусторонней плате (V — другая). */
+  traceSide: CopperSide = "top";
+
+  /**
+   * Сменить сторону дорожки (V). Если дорожка сейчас ведётся от узла — там ставится переход:
+   * медь одной стороны переходит на другую через металлизированное отверстие.
+   */
+  private switchTraceSide(): void {
+    const board = this.pendingPad ? boardById(this.pendingPad.boardId) : (this.scene.boards ?? []).find((b) => b.layers === 2);
+    if (!board || board.layers !== 2) return this.setHint("Сторона дорожки меняется только на двусторонней плате (в панели платы: «Медь — с двух сторон»).");
+    this.traceSide = this.traceSide === "top" ? "bottom" : "top";
+    const p = this.pendingPad;
+    const seat = p?.seat ? (board.seats ?? []).find((x) => x.id === p.seat) : undefined;
+    if (p && seat?.fp === "NODE") {
+      // Узел становится переходом
+      seat.fp = "VIA";
+      delete seat.side;
+      this.boardsChanged();
+      this.pendingPad = HOLE_BY_ID.get(p.id);
+      this.changed();
+    } else if (p && !padOnSide(p, this.traceSide)) {
+      this.traceSide = this.traceSide === "top" ? "bottom" : "top";
+      return this.setHint(`<b>${holeLabel(p.id)}</b> — медь только ${p.side === "top" ? "сверху" : "снизу"}: отсюда на другую сторону не уйти. Проведите дорожку до пустого места (там узел) и нажмите V там — будет переход.`);
+    }
+    this.updateGhost();
+    this.inspectorHtml = "";
+    this.renderInspector();
+    this.setHint(`Дорожка — ${this.traceSide === "top" ? "сверху (со стороны деталей)" : "снизу (синим, просвечивает)"}${p && seat?.fp === "VIA" ? `; в ${seat.id} — переход` : ""}. V — другая сторона.`);
+  }
 
   private rotate(): void {
     if (this.tool === "wire") {
@@ -2088,15 +2125,18 @@ export class App {
     }
     if (h.id === this.pendingPad.id) return this.cancelPending();
     if (h.boardId !== this.pendingPad.boardId) return this.setHint("Дорожка не переходит с платы на плату. Между платами — провод.");
+    const side: CopperSide = boardById(h.boardId)?.layers === 2 ? this.traceSide : "top";
+    const away = [this.pendingPad, h].find((x) => !padOnSide(x, side));
+    if (away) return this.setHint(`До <b>${holeLabel(away.id)}</b> медь ${side === "bottom" ? "снизу" : "сверху"} не достаёт: она ${away.side === "top" ? "только сверху" : "только снизу"}. Переход на другую сторону — V на узле.`);
     const traces = (this.scene.traces ??= []);
-    // Дорожка, проходящая по площадкам, соединяется с каждой из них — делим на отрезки
-    const pads = padsAlong(this.pendingPad.id, h.id);
+    // Дорожка, проходящая по площадкам своей стороны, соединяется с каждой из них — делим на отрезки
+    const pads = padsAlong(this.pendingPad.id, h.id, side);
     const added: string[] = [];
     for (let i = 0; i < pads.length - 1; i++) {
       const [a, b] = [pads[i], pads[i + 1]];
-      if (!traces.some((t) => (t.a === a && t.b === b) || (t.a === b && t.b === a))) {
+      if (!traces.some((t) => ((t.a === a && t.b === b) || (t.a === b && t.b === a)) && (t.side ?? "top") === side)) {
         const id = this.nextTraceId();
-        traces.push({ id, a, b });
+        traces.push({ id, a, b, ...(side === "bottom" ? { side } : {}) });
         added.push(id);
       }
     }
@@ -2449,9 +2489,13 @@ export class App {
     else if (t === "bb") s = "Нажмите на свободное место на столе — туда ляжет макетка на 400 точек.";
     else if (t === "pcb") s = "Нажмите на свободное место на столе — туда ляжет печатная плата. Размер — в панели справа.";
     else if (t === "smdb") s = "Нажмите на свободное место на столе — туда ляжет плата под SMD. Размер — в панели справа.";
-    else if (t === "trace") s = this.pendingPad
-      ? `Дорожка от <b>${holeLabel(this.pendingPad.id)}</b>: следующая площадка. Щелчок по той же или Esc — закончить.`
-      : `Нажмите на <b>площадку</b> печатной платы, затем на следующую — между ними ляжет медная дорожка.${(this.scene.boards ?? []).some(isSmdBoard) ? " На плате под SMD щелчок по пустому месту — узел для поворота." : ""}`;
+    else if (t === "trace") {
+      const two = (this.scene.boards ?? []).some((b) => b.layers === 2);
+      const sideText = two ? ` Сторона — <b>${this.traceSide === "top" ? "сверху" : "снизу"}</b>, V — другая (на узле — переход).` : "";
+      s = this.pendingPad
+        ? `Дорожка от <b>${holeLabel(this.pendingPad.id)}</b>: следующая площадка. Щелчок по той же или Esc — закончить.${sideText}`
+        : `Нажмите на <b>площадку</b> печатной платы, затем на следующую — между ними ляжет медная дорожка.${(this.scene.boards ?? []).some(isSmdBoard) ? " На плате под SMD щелчок по пустому месту — узел для поворота." : ""}${sideText}`;
+    }
     else if (this.isPlaceTool(t)) {
       s = placeTools().get(t)!.def.hint(this.settingsOf(t), this.pendingHole ? holeLabel(this.pendingHole.id) : undefined);
       // SMD-деталь — на плату под SMD: там площадки появляются под ней, где её ни поставь
@@ -2692,6 +2736,23 @@ export class App {
       const id = this.selectedHole?.boardId ?? this.selectedBoard;
       if (id && field === "chipPkg") this.resizeChip(id, value);
       else if (id) this.editChip(id, field, value);
+      this.inspectorHtml = "";
+      this.renderInspector();
+      return;
+    }
+    if (field === "boardLayers") {
+      const id = this.selectedHole?.boardId ?? this.selectedBoard;
+      const b = (this.scene.boards ?? []).find((x) => x.id === id);
+      if (b && value === "2") b.layers = 2;
+      else if (b) {
+        const onBoard = (h: string) => HOLE_BY_ID.get(h)?.boardId === b.id;
+        const bottom = (this.scene.traces ?? []).filter((t) => t.side === "bottom" && onBoard(t.a));
+        const vias = (b.seats ?? []).filter((x) => x.fp === "VIA" || x.side === "bottom");
+        if (bottom.length || vias.length) this.setHint(`Снизу ещё есть медь: ${bottom.length} дорожек, ${vias.length} переходов и узлов. Уберите их — тогда плата станет односторонней.`);
+        else delete b.layers;
+      }
+      if (b) this.boardsChanged();
+      this.changed();
       this.inspectorHtml = "";
       this.renderInspector();
       return;

@@ -4,7 +4,7 @@
  */
 
 import { HOLE_BY_ID, fineTrace } from "../model/breadboard";
-import { copperContacts } from "../model/copper";
+import { copperContacts, traceNodes } from "../model/copper";
 import { FINE_TRACE_OHM_PER_MM, FLAT_WIRE_EXTRA, TRACE_OHM_PER_MM, WIRE_OHM_PER_MM, isFlatWire, jumperPoints, type Component, type ComponentState, type Endpoint, type Mosfet, type Scene, type Transistor, type WireBend, type WireShape } from "../model/types";
 import { resolveChip } from "../chips/registry";
 import { PARTS, part } from "../parts";
@@ -231,7 +231,8 @@ export class Simulation {
       out.push({ id: w.id, a: endpointNode(this.scene, w.a), b: endpointNode(this.scene, w.b), r: w.fault?.open ? Infinity : wireResistance(this.scene, w) });
     }
     for (const t of this.scene.traces ?? []) {
-      out.push({ id: t.id, a: HOLE_BY_ID.get(t.a)!.node, b: HOLE_BY_ID.get(t.b)!.node, r: t.fault?.open ? Infinity : traceResistance(t.a, t.b) });
+      const [a, b] = traceNodes(t);
+      out.push({ id: t.id, a, b, r: t.fault?.open ? Infinity : traceResistance(t.a, t.b) });
     }
     // Медь, которая касается чужой меди, — одно целое: пересечённые дорожки замкнуты
     copperContacts(this.scene.traces ?? []).forEach((k, i) => out.push({ id: `copper:${i}:${k.trace}`, a: k.a, b: k.b, r: COPPER_CONTACT_OHMS }));

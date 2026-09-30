@@ -4,7 +4,7 @@ import { EffectComposer } from "three/addons/postprocessing/EffectComposer.js";
 import { RenderPass } from "three/addons/postprocessing/RenderPass.js";
 import { UnrealBloomPass } from "three/addons/postprocessing/UnrealBloomPass.js";
 import { OutputPass } from "three/addons/postprocessing/OutputPass.js";
-import { BOARDS, HOLES, boardRect, boardSize, boardsBounds, type BoardSpec, type Hole } from "../model/breadboard";
+import { BOARDS, HOLES, VIA_DRILL, boardRect, boardSize, boardsBounds, type BoardSpec, type Hole } from "../model/breadboard";
 import { breadboardTexture, smdBoardTexture, chipTexture, matTexture, pcbTexture, puffTexture } from "./textures";
 
 const MAX_DOTS = 3000;
@@ -516,6 +516,15 @@ function seatCopper(b: BoardSpec, height: number): THREE.Group {
   const drill = new THREE.MeshStandardMaterial({ color: 0x15191a, roughness: 0.9 });
   for (const h of HOLES) {
     if (h.boardId !== b.id || !h.seat || h.w! < 0.2) continue; // узел дорожки — без площадки
+    if (b.seats?.find((x) => x.id === h.seat)?.fp === "VIA") {
+      // Переход: маленькое лужёное кольцо и отверстие Ø 0,3 мм
+      const ring = new THREE.Mesh(new THREE.CylinderGeometry(h.w! / 2, h.w! / 2, 0.026, 16), tin);
+      ring.position.set(h.x, height + 0.013, h.z);
+      const hole = new THREE.Mesh(new THREE.CylinderGeometry(VIA_DRILL / 2.54 / 2, VIA_DRILL / 2.54 / 2, 0.03, 10), drill);
+      hole.position.set(h.x, height + 0.014, h.z);
+      g.add(ring, hole);
+      continue;
+    }
     if (h.round) {
       // Отверстие выводной детали: лужёное кольцо и тёмный канал
       const ring = new THREE.Mesh(new THREE.CylinderGeometry(h.w! / 2, h.w! / 2, 0.012, 20), tin);

@@ -144,6 +144,7 @@ export function tracePanel(h: PanelHost, id: string): [string, string] {
     ${quiet(h) ? "" : readout(Math.abs(b.voltage), Math.abs(b.current), b.power)}
     <div class="kv"><span>От</span><span>${holeLabel(t.a)}</span></div>
     <div class="kv"><span>До</span><span>${holeLabel(t.b)}</span></div>
+    ${t.side === "bottom" ? `<div class="kv"><span>Сторона</span><span>снизу</span></div>` : ""}
     <div class="kv"><span>Длина</span><span>${String(lengthMm.toFixed(1)).replace(".", ",")} мм</span></div>
     <div class="kv"><span>Сопротивление</span><span>${formatOhms(traceResistance(t.a, t.b))}</span></div>
     <p class="sub">Медь 35 мкм, ширина с площадку — 1,8 мм: ≈ 0,27 мОм на миллиметр. Чтобы набрать хотя бы 1 Ом, понадобилось бы ≈ 3,7 м такой дорожки.</p>
@@ -256,6 +257,8 @@ export function boardSection(b: BoardSpec): string {
     <div class="eyebrow">плата</div>
     <h3>${boardName(b)[0].toUpperCase()}${boardName(b).slice(1)}</h3>
     ${sizeRow}
+    ${b.kind === "smd" || b.kind === "pcb" ? selectField("boardLayers", "Медь", [["1", "с одной стороны"], ["2", "с двух сторон — дорожки и снизу"]], b.layers === 2 ? "2" : "1") : ""}
+    ${b.layers === 2 ? `<p class="sub">Двусторонняя: медь и сверху, и снизу. Нижние дорожки видны синим — сквозь плату. Дорожки разных сторон не касаются, так что одна проходит под другой. Сторону новой дорожки меняет V; нажмите V, ведя дорожку от узла, — там будет <b>переход</b> (металлизированное отверстие) на другую сторону. SMD-площадки — только сверху, отверстия выводных деталей и переходы — с обеих сторон.</p>` : ""}
     <p class="sub">Чтобы передвинуть, тащите плату мышью — детали, провода и дорожки поедут вместе с ней.</p>
     <div class="row"><button class="btn inline danger" data-board-act="remove">Убрать плату</button></div>
   </div>`;

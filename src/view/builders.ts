@@ -244,9 +244,16 @@ const PAD_HOLE_R = 0.16;
  * Медная дорожка между двумя площадками: полоса шириной с площадку (1,8 мм), концы скруглены
  * по контуру площадок, отверстия площадок остаются открытыми.
  */
-export function buildTraceView(id: string, a: Hole, b: Hole) {
+/**
+ * Нижняя медь двусторонней платы: сверху её видно сквозь стеклотекстолит — приглушённой синей
+ * (как нижний слой в редакторах плат), под верхней медью.
+ */
+const bottomCopperMaterial = new THREE.MeshStandardMaterial({ color: 0x4f86c9, roughness: 0.6, metalness: 0.1, transparent: true, opacity: 0.6, depthWrite: false });
+
+export function buildTraceView(id: string, a: Hole, b: Hole, side?: "top" | "bottom") {
   const group = new THREE.Group();
-  const y = a.y + 0.004;
+  const bottom = side === "bottom";
+  const y = a.y + (bottom ? 0.001 : 0.004);
   const pa = new THREE.Vector3(a.x, y, a.z);
   const pb = new THREE.Vector3(b.x, y, b.z);
   const len = pa.distanceTo(pb);
@@ -264,9 +271,9 @@ export function buildTraceView(id: string, a: Hole, b: Hole) {
     hole.absarc(x, 0, PAD_HOLE_R, 0, Math.PI * 2, true);
     shape.holes.push(hole);
   }
-  const geom = new THREE.ExtrudeGeometry(shape, { depth: 0.02, bevelEnabled: false, curveSegments: 16 });
+  const geom = new THREE.ExtrudeGeometry(shape, { depth: bottom ? 0.002 : 0.02, bevelEnabled: false, curveSegments: 16 });
   geom.rotateX(-Math.PI / 2); // Y контура → −Z, толщина вверх
-  const strip = new THREE.Mesh(geom, copperMaterial);
+  const strip = new THREE.Mesh(geom, bottom ? bottomCopperMaterial : copperMaterial);
   strip.position.copy(pa);
   strip.rotation.y = Math.atan2(-(pb.z - pa.z), pb.x - pa.x);
   group.add(strip);

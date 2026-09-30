@@ -8,6 +8,7 @@
  * Пересечение линий без точки — не соединение, точка — соединение.
  */
 
+import { traceNodes } from "../model/copper";
 import { HOLE_BY_ID, chipPinHole, chipPinName } from "../model/breadboard";
 import { PIN_ROLES } from "../chips/roles";
 import type { Component, Pin, Scene, SchematicLayout } from "../model/types";
@@ -50,9 +51,9 @@ export function buildNetlist(scene: Scene): Netlist {
   }
   for (const w of scene.wires) union(endpointNode(scene, w.a), endpointNode(scene, w.b));
   for (const t of scene.traces ?? []) {
-    const a = HOLE_BY_ID.get(t.a);
-    const b = HOLE_BY_ID.get(t.b);
-    if (a && b) union(a.node, b.node);
+    if (!HOLE_BY_ID.has(t.a) || !HOLE_BY_ID.has(t.b)) continue;
+    const [a, b] = traceNodes(t);
+    union(a, b);
   }
   const index = new Map<string, number>();
   const nets: string[][] = [];
