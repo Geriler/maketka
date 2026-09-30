@@ -42,7 +42,7 @@ const CHIP_CATS: { name: string; funcs: LogicFunc[] }[] = [
   { name: "Вентили", funcs: ["not", "nand", "nor", "and", "or", "xor", "xnor", "xnor4", "buf", "schmitt"] },
   { name: "Выбор", funcs: ["mux", "mux4q", "dec2", "dec3", "seg7", "bcd7"] },
   { name: "Числа", funcs: ["half", "full", "add4", "addsub", "eq2", "mag1", "mag4"] },
-  { name: "Память", funcs: ["sr", "dlatch", "dff", "dlatchr", "dffr", "sreg4", "sreg8", "sreg595", "reg8z", "reg173", "rom8", "ram4"] },
+  { name: "Память", funcs: ["sr", "dlatch", "dff", "dlatchr", "dffr", "sreg4", "sreg8", "sreg595", "reg8z", "reg173", "rom8", "ram4", "sram1", "dram1"] },
   { name: "Счёт и время", funcs: ["div2", "cnt4", "tffr", "cnt393", "cnt1", "cnt161", "johnson", "cnt4017", "timer", "osc", "rcdb", "debounce"] },
   { name: "Шина", funcs: ["tbuf", "tbuf4", "buf8z", "bus245"] },
   { name: "Аналоговые", funcs: ["cmp", "cmp2", "opamp", "opamp2", "vref", "reg5"] },

@@ -474,6 +474,132 @@ function bench(def: ChipDef, level: Level, chips: Record<string, ChipDef>, volts
   return { sim, scene, out, step, burnt };
 }
 
+/**
+ * Стенд ячейки памяти: микросхема U1 (до транзисторов), блок питания 5 В, источник строки GW
+ * (его напряжение задаёт шаг), источник половины питания GH и то, что висит на линиях данных:
+ * подтяжки 10 кОм к питанию (RP1, RP2) и ёмкость линии CB. Шаг — какие выводы куда соединить
+ * и сколько секунд так держать; после шага — напряжения на выводах.
+ */
+type CellTie = "vcc" | "gnd" | "wl" | "half" | "pull" | "cb" | "free";
+function cellBench(def: ChipDef, chips: Record<string, ChipDef>) {
+  const free = { mode: "free" as const, x: 0, z: 0, rot: 0 };
+  const u: Chip = { id: "U1", type: "chip", def: def.id, name: def.name, package: def.package, pins: def.pins, placement: free };
+  const res = (id: string, ohms: number): Component => ({ id, type: "resistor", variant: "tht", ohms, smdSize: "0805", placement: free });
+  const scene: Scene = {
+    components: [
+      { id: "G1", type: "psu", volts: 5, amps: 1, on: true, placement: free },
+      u,
+      { id: "GW", type: "psu", volts: 5, amps: 1, on: true, placement: free },
+      { id: "GH", type: "psu", volts: 2.5, amps: 1, on: true, placement: free },
+      res("RP1", 10_000),
+      res("RP2", 10_000),
+      { id: "CB", type: "capacitor", variant: "ceramic", uF: 1, volts: 50, placement: free } as Component,
+    ],
+    wires: [],
+    boards: [],
+    chips: { ...chips, [def.id]: def },
+  };
+  const sim = new Simulation(scene, undefined, { expand: ["U1"], strictModels: true });
+  const pin = (p: number): Endpoint => ({ comp: "U1", pin: p - 1 });
+  const burnt = new Set<string>();
+  /** Выводы ties (номер → куда) на seconds секунд при строке wl вольт; напряжения выводов после. */
+  const hold = (ties: Record<number, CellTie>, wl: number, seconds: number) => {
+    (scene.components[2] as { volts: number }).volts = wl;
+    let pulls = 0;
+    const links: [Endpoint, Endpoint][] = [[{ comp: "G1", pin: 0 }, { comp: "GW", pin: 0 }], [{ comp: "G1", pin: 0 }, { comp: "GH", pin: 0 }], [{ comp: "CB", pin: 1 }, { comp: "G1", pin: 0 }]];
+    for (const [p, t] of Object.entries(ties)) {
+      const e = pin(Number(p));
+      if (t === "vcc") links.push([e, { comp: "G1", pin: 1 }]);
+      if (t === "gnd") links.push([e, { comp: "G1", pin: 0 }]);
+      if (t === "wl") links.push([e, { comp: "GW", pin: 1 }]);
+      if (t === "half") links.push([e, { comp: "GH", pin: 1 }], [e, { comp: "CB", pin: 0 }]);
+      if (t === "cb") links.push([e, { comp: "CB", pin: 0 }]);
+      if (t === "pull") {
+        const r = `RP${++pulls}`;
+        links.push([e, { comp: r, pin: 0 }], [{ comp: r, pin: 1 }, { comp: "G1", pin: 1 }]);
+      }
+    }
+    scene.wires = links.map(([a, b], i) => ({ id: `W${i}`, a, b, color: "" }));
+    sim.solve();
+    for (let t = 0; t < seconds - 1e-9; t += 0.005) for (const c of sim.step(0.005)) if (c.id.startsWith("U1/")) burnt.add(c.id.slice(3));
+    for (const c of sim.parts) {
+      const limit = heatThreshold(c);
+      if (c.id.startsWith("U1/") && limit && sim.overload(c) > limit) burnt.add(c.id.slice(3));
+    }
+    return (p: number) => sim.solution.voltage.get(pinNode(u, p - 1)) ?? 0;
+  };
+  return { hold, burnt };
+}
+
+/**
+ * Ячейка SRAM (1 WL, 2 BL, 3 GND, 4 BL̅, 6 VCC): запись — строка открыта, линии держит сильный
+ * источник (прямо питание и общий); в покое и при чтении линии подтянуты к питанию 10 кОм, как у
+ * настоящей памяти. Чтение: одна из линий уходит к нулю — BL при нуле, BL̅ при единице.
+ */
+function sramSteps(def: ChipDef, chips: Record<string, ChipDef>): { text: string; ok: boolean }[] {
+  const { hold, burnt } = cellBench(def, chips);
+  const base = { 3: "gnd", 6: "vcc" } as const;
+  const idle = () => hold({ ...base, 1: "gnd", 2: "pull", 4: "pull" }, 5, 0.05);
+  const write = (b: boolean) => hold({ ...base, 1: "wl", 2: b ? "vcc" : "gnd", 4: b ? "gnd" : "vcc" }, 5, 0.02);
+  const read = () => {
+    const v = hold({ ...base, 1: "wl", 2: "pull", 4: "pull" }, 5, 0.02);
+    return [v(2), v(4)] as const;
+  };
+  const out: { text: string; ok: boolean }[] = [];
+  const fmt = (x: number) => formatSI(x, "В");
+  for (const b of [true, false]) {
+    write(b);
+    // Не выбранная ячейка линий не трогает: обе остаются подтянутыми к питанию
+    const v = idle();
+    out.push({ text: `Записали ${+b}, строка закрыта: BL ${fmt(v(2))}, BL̅ ${fmt(v(4))} (обе должны остаться высокими — ячейка не выбрана)`, ok: v(2) >= 3.5 && v(4) >= 3.5 });
+    const [bl1, blb1] = read();
+    idle();
+    const [bl2, blb2] = read();
+    idle();
+    const good = (bl: number, blb: number) => (b ? bl >= 3.5 && blb <= 1.5 : bl <= 1.5 && blb >= 3.5);
+    out.push({ text: `Открыли строку и прочитали: BL ${fmt(bl1)}, BL̅ ${fmt(blb1)} (нужно ${b ? "BL высокий, BL̅ у нуля" : "BL у нуля, BL̅ высокий"})`, ok: good(bl1, blb1) });
+    out.push({ text: `Прочитали ещё раз — чтение не портит: BL ${fmt(bl2)}, BL̅ ${fmt(blb2)}`, ok: good(bl2, blb2) });
+  }
+  out.push({ text: burnt.size ? `Сгорело: ${[...burnt].join(", ")}` : "Ничего не сгорело", ok: !burnt.size });
+  return out;
+}
+
+/** Сдвиг линии при чтении DRAM, который ещё различит усилитель чтения, В. */
+export const DRAM_SENSE = 0.1;
+
+/**
+ * Ячейка DRAM (1 WL, 2 BL, 4 GND): запись — строка 10 В (выше питания, как у настоящих DRAM),
+ * линия 0 или 5 В; хранение — строка 0, линия меняется (пишут соседей); чтение — линию с ёмкостью
+ * 1 мкФ ставят на 2,5 В, отпускают и открывают строку: сдвиг вверх — было 1, вниз — было 0.
+ */
+function dramSteps(def: ChipDef, chips: Record<string, ChipDef>): { text: string; ok: boolean }[] {
+  const { hold, burnt } = cellBench(def, chips);
+  const write = (b: boolean) => hold({ 4: "gnd", 1: "wl", 2: b ? "vcc" : "gnd" }, 10, 0.02);
+  // Пока ячейка заперта, по линии гуляют чужие записи: то 0, то 5 В
+  const wait = () => {
+    hold({ 4: "gnd", 1: "gnd", 2: "vcc" }, 10, 0.25);
+    hold({ 4: "gnd", 1: "gnd", 2: "gnd" }, 10, 0.25);
+  };
+  const read = () => {
+    hold({ 4: "gnd", 1: "gnd", 2: "half" }, 10, 0.02);
+    return hold({ 4: "gnd", 1: "wl", 2: "cb" }, 10, 0.02)(2) - 2.5;
+  };
+  const mv = (x: number) => `${x >= 0 ? "+" : "−"}${formatSI(Math.abs(x), "В")}`;
+  const out: { text: string; ok: boolean }[] = [];
+  for (const b of [true, false]) {
+    write(b);
+    wait();
+    const d = read();
+    out.push({ text: `Записали ${+b}, полсекунды хранили, прочитали: линия ${mv(d)} от 2,5 В (нужно ${b ? "вверх" : "вниз"} хотя бы на ${formatSI(DRAM_SENSE, "В")})`, ok: b ? d >= DRAM_SENSE : d <= -DRAM_SENSE });
+  }
+  write(true);
+  const first = read();
+  const second = read();
+  out.push({ text: `Прочитали 1 два раза подряд, не переписывая: ${mv(first)}, потом ${mv(second)} — чтение разрядило ячейку, поэтому память после чтения записывает бит обратно`, ok: true });
+  out.push({ text: burnt.size ? `Сгорело: ${[...burnt].join(", ")}` : "Ничего не сгорело", ok: !burnt.size });
+  return out;
+}
+
 /** Пороги по даташиту 74LVC1G14 (4,5–5,5 В), В: VT+, VT−, наименьший гистерезис. */
 export const SCHMITT_LIMITS = { up: [2.2, 3.4], down: [1.4, 2.4], hyst: 0.5 } as const;
 
@@ -917,10 +1043,10 @@ export function checkLevel(level: Level, scene: Scene, chips: Record<string, Chi
   def.scene.chips = { ...chipsUsed(scene), ...(scene.chips ?? {}) };
   // Предел питания по паспорту — у собранной аналоговой микросхемы (у логики он в её модели)
   if (level.absMax) def.absMax = level.absMax;
-  if (level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "opamp" || level.check === "regulator") {
+  if (level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "opamp" || level.check === "regulator" || level.check === "sram" || level.check === "dram") {
     const all = { ...chips, ...def.scene.chips };
     const steps =
-      level.check === "osc" ? oscSteps(def, level, all) : level.check === "bounce" ? bounceSteps(def, level, all) : level.check === "opamp" ? opampSteps(def, level, all) : level.check === "regulator" ? regulatorSteps(def, level, all) : compareSteps(def, level, all);
+      level.check === "osc" ? oscSteps(def, level, all) : level.check === "bounce" ? bounceSteps(def, level, all) : level.check === "opamp" ? opampSteps(def, level, all) : level.check === "regulator" ? regulatorSteps(def, level, all) : level.check === "sram" ? sramSteps(def, all) : level.check === "dram" ? dramSteps(def, all) : compareSteps(def, level, all);
     const ok = steps.every((x) => x.ok);
     return ok
       ? { ok, problems: [], rows: [], steps, def, metrics: measure(scene, [], def, all) }
@@ -1072,7 +1198,7 @@ export function characterize(def: ChipDef, scene: Scene): ChipModel | undefined 
   // Генератор моделью не описать: у него нет таблицы — считается целиком
   // Генератор и подавитель дребезга живут временем (RC) — модель без времени их не заменит
   // Компараторы и таймер сравнивают напряжения, а не логические уровни: только по транзисторам
-  if (!level || def.pins !== level.roles.length || level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "timer" || level.check === "opamp" || level.check === "regulator") return undefined;
+  if (!level || def.pins !== level.roles.length || level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "timer" || level.check === "opamp" || level.check === "regulator" || level.check === "sram" || level.check === "dram") return undefined;
   const key = `${def.id}@${def.updatedAt}`;
   const known = models.get(key);
   if (known !== undefined) return known ?? undefined;
