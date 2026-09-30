@@ -108,14 +108,15 @@ export interface Seat {
  * дорожки: точка излома или развилки, без детали. VIA — переходное отверстие двусторонней платы:
  * металлизированное отверстие Ø 0,3 мм в кольце Ø 0,6 мм, соединяет медь сторон.
  */
-export type SmdFootprint = "SOT-23" | "SOT-23-5" | "SOT-23-6" | "SOT-143" | "SO-4" | "SO-6" | "SO-8" | "SO-14" | "SO-16" | "SO-18" | "SO-20" | "1206" | "0805" | "0603" | "0402";
-export type Footprint = SmdFootprint | `DIP-${number}` | "TH3" | `TH2-${number}` | "DISP-10" | "NODE" | "VIA";
+export type SmdFootprint = "SOT-23" | "SOT-23-5" | "SOT-23-6" | "SOT-143" | "SO-4" | "SO-6" | "SO-8" | "SO-14" | "SO-16" | "SO-18" | "SO-20" | "SO-24" | "SO-28" | "SOP-28" | "1206" | "0805" | "0603" | "0402";
+/** DIP-n — выводы в два ряда через 7,62 мм (300 мил); DIPW-n — через 15,24 мм (600 мил), как у больших памяти. */
+export type Footprint = SmdFootprint | `DIP-${number}` | `DIPW-${number}` | "TH3" | `TH2-${number}` | "DISP-10" | "NODE" | "VIA";
 
 /** Место без детали — точка меди: узел дорожки или переход. */
 export const isCopperPoint = (fp: Footprint): boolean => fp === "NODE" || fp === "VIA";
 
 /** Выводное посадочное место (отверстия), а не SMD. */
-export const isThtFootprint = (fp: Footprint): boolean => fp.startsWith("DIP-") || fp.startsWith("TH") || fp === "DISP-10";
+export const isThtFootprint = (fp: Footprint): boolean => fp.startsWith("DIP") || fp.startsWith("TH") || fp === "DISP-10";
 
 /** Площадка в мм в своей системе координат: вывод 1 — слева в ближнем ряду (+z к себе). */
 interface PadMm {
@@ -145,8 +146,13 @@ const CHIP_PADS: Record<string, { c: number; w: number; d: number; body: [number
 /** SOT-23: шаг 0,95 мм, ряды площадок в ±1,1 мм от центра; SOIC: шаг 1,27 мм, ряды в ±2,7 мм. */
 const SOT = { pitch: 0.95, row: 1.1, w: 0.6, d: 1.0 };
 const SO = { pitch: 1.27, row: 2.7, w: 0.6, d: 1.55 };
-/** Широкий SOIC (18 и 20 выводов, JEDEC MS-013): корпус 7,5 мм, ряды площадок через 9,3 мм. */
+/** Широкий SOIC (18…28 выводов, JEDEC MS-013): корпус 7,5 мм, ряды площадок через 9,3 мм. */
 const SOW = { pitch: 1.27, row: 4.65, w: 0.6, d: 2.0 };
+/**
+ * SOP-28 на 450 мил (Hitachi FP-28DA, HM62256BLFP): корпус 8,4 × 18,0 мм, концы выводов
+ * через 11,8 мм, лапка 1,0 мм — ряды площадок через 10,8 мм.
+ */
+const SOP450 = { pitch: 1.27, row: 5.4, w: 0.6, d: 1.8 };
 
 /** Площадки корпуса по порядку выводов (1…n), мм. */
 export function footprintPads(fp: Footprint): PadMm[] {
@@ -160,10 +166,12 @@ export function footprintPads(fp: Footprint): PadMm[] {
     const k = Number(fp.slice(4));
     return [th(-k / 2, 0), th(k / 2, 0)];
   }
-  if (fp.startsWith("DIP-")) {
-    const n = Number(fp.slice(4));
+  if (fp.startsWith("DIP")) {
+    const wide = fp.startsWith("DIPW-");
+    const n = Number(fp.slice(wide ? 5 : 4));
     const k = n / 2;
-    return pinOffsets("DIP", n).map(([along, across]) => th(along - (k - 1) / 2, across === 0 ? 1.5 : -1.5));
+    const half = wide ? 3 : 1.5;
+    return pinOffsets(wide ? "DIPW" : "DIP", n).map(([along, across]) => th(along - (k - 1) / 2, across === 0 ? half : -half));
   }
   const chip = CHIP_PADS[fp];
   if (chip) return [{ x: -chip.c, z: 0, w: chip.w, d: chip.d }, { x: chip.c, z: 0, w: chip.w, d: chip.d }];
@@ -174,9 +182,10 @@ export function footprintPads(fp: Footprint): PadMm[] {
   // SOT-143: 1 и 2 — ближний ряд через 1,92 мм, 3 — дальний справа, 4 — дальний слева
   if (fp === "SOT-143") return [at(SOT, -1, true), at(SOT, 1, true), at(SOT, 1, false), at(SOT, -1, false)];
   if (fp === "SOT-23-6") return [at(SOT, -1, true), at(SOT, 0, true), at(SOT, 1, true), at(SOT, 1, false), at(SOT, 0, false), at(SOT, -1, false)];
-  const n = Number(fp.slice(3));
+  const sop = fp === "SOP-28";
+  const n = sop ? 28 : Number(fp.slice(3));
   const k = n / 2;
-  const g = n >= 18 ? SOW : SO;
+  const g = sop ? SOP450 : n >= 18 ? SOW : SO;
   return Array.from({ length: n }, (_, i) => (i < k ? at(g, i - (k - 1) / 2, true) : at(g, n - 1 - i - (k - 1) / 2, false)));
 }
 
@@ -188,6 +197,7 @@ export function footprintBody(fp: Footprint): [number, number, number] {
   if (chip) return chip.body;
   if (fp === "SOT-23" || fp === "SOT-143") return [2.9, 1.3, 1.0];
   if (fp === "SOT-23-5" || fp === "SOT-23-6") return [2.9, 1.6, 1.1];
+  if (fp === "SOP-28") return [18.0, 8.4, 2.8];
   const n = Number(fp.slice(3));
   return n >= 18 ? [(n / 2) * 1.27 + 0.1, 7.5, 2.65] : [(n / 2) * 1.27 - 0.2, 3.9, 1.5];
 }
@@ -272,8 +282,11 @@ export function seatOf(holeId: string): { board: BoardSpec; seat: Seat } | undef
 /** Назначение вывода корпуса; nc — не подключён. */
 export type ChipPinRole = "nc" | "in" | "out" | "io" | "vcc" | "gnd";
 
-/** Вид корпуса: DIP (выводы в два ряда) или SOT-23-5/6, SOT-143 — крошечные, на переходнике с шагом 2,54 мм. */
-export type ChipPackage = "DIP" | "SOT-23-5" | "SOT-23-6" | "SOT-143";
+/**
+ * Вид корпуса: DIP (выводы в два ряда через 300 мил), DIPW — то же через 600 мил (большая
+ * память, AT28C256), или SOT-23-5/6, SOT-143 — крошечные, на переходнике с шагом 2,54 мм.
+ */
+export type ChipPackage = "DIP" | "DIPW" | "SOT-23-5" | "SOT-23-6" | "SOT-143";
 
 /** Крошечный корпус на переходнике. */
 export const isSot = (pkg: ChipPackage | undefined): pkg is "SOT-23-5" | "SOT-23-6" | "SOT-143" => pkg === "SOT-23-5" || pkg === "SOT-23-6" || pkg === "SOT-143";
@@ -283,7 +296,7 @@ export const PACKAGES = ["DIP-4", "DIP-6", "DIP-8", "DIP-14", "DIP-16", "DIP-18"
 
 /** Название корпуса: «DIP-8», «SOT-23-5». */
 export function packageName(pkg: ChipPackage | undefined, pins: number): string {
-  return isSot(pkg) ? pkg : `DIP-${pins}`;
+  return isSot(pkg) ? pkg : pkg === "DIPW" ? `DIP-${pins} (600 мил)` : `DIP-${pins}`;
 }
 
 /** Из названия — вид и число выводов. */
@@ -304,7 +317,8 @@ export function pinOffsets(pkg: ChipPackage | undefined, pins: number): [number,
   if (pkg === "SOT-23-5") return [[0, 0], [1, 0], [2, 0], [2, 3], [0, 3]];
   if (pkg === "SOT-143") return [[0, 0], [2, 0], [2, 3], [0, 3]];
   const k = pins / 2;
-  return Array.from({ length: pins }, (_, i): [number, number] => (i < k ? [i, 0] : [pins - 1 - i, 3]));
+  const across = pkg === "DIPW" ? 6 : 3;
+  return Array.from({ length: pins }, (_, i): [number, number] => (i < k ? [i, 0] : [pins - 1 - i, across]));
 }
 
 /** Выводы семисегментного индикатора относительно вывода 1: как DIP-10, но ряды через 6 шагов. */

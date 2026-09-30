@@ -37,6 +37,13 @@ export interface ChipModel {
    * logic получает это содержимое третьим аргументом.
    */
   ram?: { words: number; write(bits: boolean[]): [number, number] | undefined };
+  /**
+   * EEPROM: содержимое — в проекте (Chip.data), как у ПЗУ, но пишет и схема. write — что записать
+   * по входам прошлого установившегося расчёта (prev) и нынешним (now): байт пишется на фронте
+   * после импульса записи. Дальше — внутренний цикл twc, с: пока он идёт, чтение — опрос (DATA
+   * polling). Ниже vsense В и powerOn с после включения запись запрещена. blank — чистая ячейка.
+   */
+  eeprom?: { words: number; write(prev: boolean[], now: boolean[]): [number, number] | undefined; twc: number; vsense: number; powerOn: number; blank: number };
   /** Какие выходы отключены (третье состояние) при входах bits; нет — у микросхемы Z не бывает. */
   z?(bits: boolean[]): boolean[];
   /** Новое внутреннее состояние после установившегося расчёта (у схем с памятью; см. ModelState.state). */

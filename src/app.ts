@@ -63,7 +63,7 @@ import { ProjectsPanel } from "./ui/projects";
 import { loadLibrary, saveLibrary } from "./chips/library";
 import { caseOf, chipInner, dipSize, packageChip, packageProblems, spaceUsed } from "./chips/package";
 import { chipsUsed, libraryChips, referenceList, resolveChip, setCareerChips, setChipToolSource, setLibrary, setReference } from "./chips/registry";
-import { RAM_ID, memoryChips } from "./chips/memory";
+import { memoryChips, memoryInfo } from "./chips/memory";
 import { checkLevel, levelScene, publicChips, referenceChips, type CheckResult } from "./career/build";
 import { goalMet, levelById, type Level } from "./career/levels";
 import type { Lesson } from "./career/lessons";
@@ -1116,7 +1116,7 @@ export class App {
     document.body.classList.toggle("mode-career", this.mode === "career");
     // Учебные промежуточные компоненты — только в наборах уровней, не в мастерской и не в песочнице
     // Прошиваемое ПЗУ в карьере открывает уровень «ПЗУ на диодах»
-    setChipToolSource(this.mode === "career" ? () => [...publicChips(careerDefs()), ...memoryChips().filter((d) => isDone(d.id === RAM_ID ? "ram4" : "rom8"))] : () => [...publicChips(referenceList()), ...libraryChips()]);
+    setChipToolSource(this.mode === "career" ? () => [...publicChips(careerDefs()), ...memoryChips().filter((d) => isDone(memoryInfo(d.id)!.opener))] : () => [...publicChips(referenceList()), ...libraryChips()]);
     setKitTools(kitTools(this.scene));
     renderToolButtons(this.ui.tools);
     this.onTool?.(this.tool);
@@ -2264,7 +2264,7 @@ export class App {
     if (pinsOf(sample) >= 4 && h.hole) {
       const n = pinsOf(sample);
       const holes = this.dipHoles(h.hole, n, this.quarterTurns(), sample.type === "chip" ? sample.package : undefined, part(sample).layout?.(sample));
-      if (!holes) return this.setHint(`Здесь не встанет: вывод 1 — в отверстие под курсором, всем ${n} выводам нужно место (${n / 2} × 2, ряды через 3 шага), не в шинах. На макетке — поперёк канавки, от ряда f. R — повернуть.`);
+      if (!holes) return this.setHint(`Здесь не встанет: вывод 1 — в отверстие под курсором, всем ${n} выводам нужно место (${n / 2} × 2, ряды через ${sample.type === "chip" && sample.package === "DIPW" ? "6 шагов — корпус на 600 мил" : "3 шага"}), не в шинах. На макетке — поперёк канавки, от ряда f. R — повернуть.`);
       const occ = this.occupied();
       const busy = holes.find((id) => occ.has(id));
       if (busy) return this.setHint(`Отверстие <b>${holeLabel(busy)}</b> занято (${occ.get(busy)}).`);
@@ -2594,7 +2594,7 @@ export class App {
       const rom = inp.dataset.field!.match(/^rom:(\d+)$/);
       if (rom)
         inp.addEventListener("keydown", (e) => {
-          if (e.key === "Enter") this.refocus = `rom:${(Number(rom[1]) + 1) % 32}`;
+          if (e.key === "Enter") this.refocus = `rom:${Number(rom[1]) + 1}`;
         });
     });
     // Ползунки блока питания: меняем уставку на лету, без перестройки сцены

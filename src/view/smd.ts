@@ -94,7 +94,7 @@ function gullBody(group: THREE.Group, fp: Footprint, c: Component): THREE.MeshSt
   const body = new THREE.Mesh(new THREE.BoxGeometry(L, T, W), [bodyMat, bodyMat, top, bodyMat, bodyMat, bodyMat]);
   body.position.y = lift + T / 2;
   group.add(body);
-  const r = mm(fp.startsWith("SO-") ? 0.2 : 0.14);
+  const r = mm(fp.startsWith("SO-") || fp === "SOP-28" ? 0.2 : 0.14);
   const ym = lift + T * 0.45;
   for (const p of footprintPads(fp)) {
     const s = Math.sign(p.z);

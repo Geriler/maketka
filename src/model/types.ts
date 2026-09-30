@@ -1,5 +1,6 @@
 /** Модель песочницы: что стоит на столе и как соединено. Без Three.js. */
 
+import { smdFootprintOf } from "../chips/memory";
 import { DEFAULT_BOARDS, HOLE_BY_ID, boardsFromLayout, holeIdsFor, type BoardSpec, type ChipPackage, type ChipPinRole, type Footprint, type Layout } from "./breadboard";
 export type { ChipPinRole } from "./breadboard";
 
@@ -619,7 +620,7 @@ export function boardConflicts(scene: Scene, boards: readonly BoardSpec[]): stri
 
 
 /** Корпуса SO-n, для которых есть посадочное место. */
-const SO_PINS = [4, 6, 8, 14, 16, 18, 20];
+const SO_PINS = [4, 6, 8, 14, 16, 18, 20, 24, 28];
 
 /** Шаг выводов аксиальной детали, в шагах 2,54 мм: корпус плюс по 1,25 мм на загиб (резистор 0,25 Вт — 10,16 мм). */
 const axialSpan = (lengthMm: number) => Math.max(3, Math.ceil((lengthMm + 2.5) / 2.54));
@@ -653,8 +654,8 @@ export function footprintOf(c: Component): Footprint | undefined {
       return "DISP-10";
     case "chip":
       if (c.package === "SOT-23-5" || c.package === "SOT-23-6" || c.package === "SOT-143") return c.package;
-      if (c.smd) return SO_PINS.includes(c.pins) ? (`SO-${c.pins}` as Footprint) : undefined;
-      return `DIP-${c.pins}`;
+      if (c.smd) return smdFootprintOf(c.def) ?? (SO_PINS.includes(c.pins) ? (`SO-${c.pins}` as Footprint) : undefined);
+      return c.package === "DIPW" ? `DIPW-${c.pins}` : `DIP-${c.pins}`;
   }
   return undefined;
 }

@@ -3,7 +3,7 @@
 import type { Component } from "../model/types";
 import { PARTS, type ToolDef } from "../parts";
 import { LEVELS, type LogicFunc } from "../career/levels";
-import { PROM_ID, RAM_ID } from "../chips/memory";
+import { isMemory } from "../chips/memory";
 
 /** Инструмент: встроенный (выбор, провод, дорожка, платы, удаление) или установка детали (id из PartDef.tools). */
 export type Tool = "select" | "wire" | "trace" | "bb" | "pcb" | "smdb" | "delete" | PlaceTool;
@@ -50,7 +50,7 @@ const CHIP_CATS: { name: string; funcs: LogicFunc[] }[] = [
 const OWN = "Свои";
 /** Раздел микросхемы по инструменту chip:ref:… / chip:career:… (обозначение уровня карьеры). */
 export function chipCat(toolId: string): string {
-  if (toolId === `chip:${PROM_ID}` || toolId === `chip:${RAM_ID}`) return "Память";
+  if (isMemory(toolId.replace(/^chip:/, ""))) return "Память";
   const level = LEVELS.find((l) => l.id === toolId.match(/^chip:(?:ref|career):(.+)$/)?.[1]);
   return (level && CHIP_CATS.find((c) => c.funcs.includes(level.func))?.name) ?? OWN;
 }

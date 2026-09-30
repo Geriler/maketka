@@ -11,7 +11,7 @@ import { type ComponentView, blackPlastic, disposeGroup, freeTransform, lead, mm
 import { kv, pill, selectField } from "../view/panel";
 import { PIN_ROLES } from "../chips/roles";
 import { chipAbout, chipKind } from "../chips/about";
-import { PROM_ID, PROM_WORDS, RAM_ID, hex2, parseWord, promWord, ramGarbage } from "../chips/memory";
+import { hex2, isMemory, memWord, memoryInfo, parseWord, ramGarbage, smdFootprintOf, type MemoryInfo } from "../chips/memory";
 import { toolFor, type PartDef } from "./types";
 
 /** Подпись вывода корпуса: имя, у неподключённого — NC. */
@@ -22,7 +22,10 @@ export function chipPinName(def: ChipDef, i: number): string {
 
 /** Инструмент установки микросхемы из библиотеки. */
 export function chipTool(def: ChipDef) {
-  const soic = !isSot(def.package) && [4, 6, 8, 14, 16, 18, 20].includes(def.pins);
+  const soic = !isSot(def.package) && [4, 6, 8, 14, 16, 18, 20, 24, 28].includes(def.pins);
+  // SMD-исполнение: SO-n (SOIC) или своё, если у микросхемы оно другое (SOP-28 на 450 мил у HM62256B)
+  const smdFp = smdFootprintOf(def.id) ?? `SO-${def.pins}`;
+  const smdName = smdFp === "SOP-28" ? "SOP-28 (SMD, 450 мил)" : `SO-${def.pins} (SMD, SOIC)`;
   const about = chipAbout(def.id);
   const kind = chipKind(def.id);
   return toolFor<Chip>()({
@@ -37,15 +40,15 @@ export function chipTool(def: ChipDef) {
     note: (s) =>
       (about ? `<p>${about}</p>` : "") +
       (s.smd && soic
-        ? `<p class="sub">SO-${def.pins} (SOIC, шаг 1,27 мм) — та же микросхема без ножек, выводы нумеруются как у DIP: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Ставится только на плату под SMD — под ней появятся площадки.</p>`
-        : `<p class="sub">${packageName(def.package, def.pins)}${isSot(def.package) ? " на переходнике" : ""}: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Встаёт поперёк центральной канавки макетки: ${pinLayoutText(def.package, def.pins)}. На плате под SMD ${isSot(def.package) ? "встаёт без переходника, на свои площадки" : "делает себе отверстия где угодно"}.</p>`),
+        ? `<p class="sub">${smdName}, шаг 1,27 мм — та же микросхема без ножек, выводы нумеруются как у DIP: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Ставится только на плату под SMD — под ней появятся площадки.</p>`
+        : `<p class="sub">${packageName(def.package, def.pins)}${isSot(def.package) ? " на переходнике" : ""}: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Встаёт поперёк центральной канавки макетки${def.package === "DIPW" ? " (ряды f и b: между рядами выводов 15,24 мм)" : ""}: ${pinLayoutText(def.package, def.pins)}. На плате под SMD ${isSot(def.package) ? "встаёт без переходника, на свои площадки" : "делает себе отверстия где угодно"}.</p>`),
     // У DIP есть исполнение в SOIC — выбор корпуса
-    editor: (s) => (soic ? selectField("chipBody", "Корпус", [["dip", `DIP-${def.pins} (выводной)`], ["soic", `SO-${def.pins} (SMD, SOIC)`]], s.smd ? "soic" : "dip") : ""),
+    editor: (s) => (soic ? selectField("chipBody", "Корпус", [["dip", `${packageName(def.package, def.pins)} (выводной)`], ["soic", smdName]], s.smd ? "soic" : "dip") : ""),
     set(s, field, value) {
       if (field === "chipBody") s.smd = value === "soic";
     },
     create: (s) => ({ type: "chip", def: def.id, name: def.name, package: def.package, pins: def.pins, ...(s.smd && soic ? { smd: true } : {}) }),
-    hint: () => `Нажмите на отверстие ряда f у канавки — туда встанет вывод 1: ${pinLayoutText(def.package, def.pins)}, дальний ряд — в ряду e. R — повернуть (до установки или выделенную): на печатной плате и корпусе — в любую сторону.`,
+    hint: () => `Нажмите на отверстие ряда f у канавки — туда встанет вывод 1: ${pinLayoutText(def.package, def.pins)}, дальний ряд — в ряду ${def.package === "DIPW" ? "b (корпус на 600 мил перекрывает канавку и ещё три ряда)" : "e"}. R — повернуть (до установки или выделенную): на печатной плате и корпусе — в любую сторону.`,
   });
 }
 
@@ -209,6 +212,8 @@ export const chip: PartDef<Chip> = {
         if (w) memData(c, model, sim)![w[0]] = w[1];
       }
     }
+    // EEPROM: байт — на фронте после импульса записи, если питания хватает и цикл не идёт
+    if (model?.eeprom) eepromCommit(c, model, sim);
     const q = sim.junction.get(`${c.id}:q`);
     if (!model || q === undefined || q < 0) return;
     const looped = !!sim.junction.get(`${c.id}:rl`);
@@ -241,20 +246,26 @@ export const chip: PartDef<Chip> = {
   power: () => 0,
   readout: (c, sim) => {
     const def = resolveChip(sim.scene, c.def);
-    return `<div class="kv"><span>${def ? `${def.name}, ${packageName(def.package, def.pins)}` : "Нет описания микросхемы"}</span><span>${def?.id === PROM_ID || def?.id === RAM_ID ? "по даташиту" : def ? countShort(countChip(def, sim.scene)) : ""}</span></div>`;
+    return `<div class="kv"><span>${def ? `${def.name}, ${packageName(def.package, def.pins)}` : "Нет описания микросхемы"}</span><span>${isMemory(def?.id) ? "по даташиту" : def ? countShort(countChip(def, sim.scene)) : ""}</span></div>`;
   },
   status: (c, sim) => (resolveChip(sim.scene, c.def) ? pill("ok", "РАБОТАЕТ") : pill("bad", "НЕТ ОПИСАНИЯ — ОТКРОЙТЕ ПРОЕКТ, ГДЕ ОНА ЕСТЬ")),
 
-  // Содержимое ПЗУ: «rom:адрес» — слово (что не разобрать — не меняем), «rom:clear» — всё в нули
+  // Содержимое ПЗУ и EEPROM: «rom:адрес» — слово (что не разобрать — не меняем), «rom:clear» —
+  // всё чистое; «rompage» — какую страницу по 256 слов показать в панели
   edit(c, field, value) {
+    if (field === "rompage") return void memPage.set(c.id, Math.max(0, Math.floor(Number(value) || 0)));
     if (field === "rom:clear") return void delete c.data;
+    const info = memoryInfo(c.def) ?? memoryInfo("ref:prom288")!;
     const a = Number(field.match(/^rom:(\d+)$/)?.[1]);
     const w = parseWord(value);
-    if (!Number.isInteger(a) || a < 0 || a >= PROM_WORDS || w === undefined) return;
-    const data = Array.from({ length: PROM_WORDS }, (_, i) => promWord(c.data, i));
-    data[a] = w;
-    c.data = data.some(Boolean) ? data : undefined;
-    if (!c.data) delete c.data;
+    if (!Number.isInteger(a) || a < 0 || a >= info.words || w === undefined) return;
+    const data = c.data ? [...c.data] : [];
+    for (let i = data.length; i <= a; i++) data[i] = info.blank;
+    data[a] = w & ((1 << info.width) - 1);
+    // Хвост из чистых слов не храним — у 32K × 8 проект иначе распух бы
+    while (data.length && (data[data.length - 1] ?? info.blank) === info.blank) data.pop();
+    if (data.length) c.data = data;
+    else delete c.data;
   },
 
   panel(c, sim) {
@@ -265,53 +276,8 @@ export const chip: PartDef<Chip> = {
       const v = volts(i);
       return kv(`${i + 1} ${chipPinName(def, i)}`, v === undefined ? "не подключён" : formatSI(v, "В"));
     }).join("");
-    // ОЗУ: содержимое — только посмотреть (оно в расчёте и без питания пропадает)
-    if (def.id === RAM_ID) {
-      const g = volts(7);
-      const high = (p: number) => {
-        const v = volts(p - 1);
-        return v !== undefined && g !== undefined && v - g > 1.4;
-      };
-      const addr = [1, 15, 14, 13].reduce((m, p, i) => m | (high(p) ? 1 << i : 0), 0);
-      const mem = sim.memory.get(`${c.id}:ram`) as number[] | undefined;
-      const mode = !mem ? "нет питания" : high(2) ? "не выбрана (S̅ = 1)" : high(3) ? `чтение, адрес ${addr}` : `запись, адрес ${addr}`;
-      const cells = Array.from({ length: 16 }, (_, a) => {
-        const w = mem?.[a];
-        return `<label class="rom-cell${mem && a === addr && !high(2) ? " now" : ""}" title="Адрес ${a} (${a.toString(2).padStart(4, "0")})${w === undefined ? "" : `: ${w.toString(2).padStart(4, "0")}`}"><span>${a.toString(16).toUpperCase()}</span><input class="btn" type="text" readonly value="${w === undefined ? "—" : w.toString(16).toUpperCase()}" aria-label="Слово по адресу ${a}" /></label>`;
-      }).join("");
-      return {
-        title: def.name,
-        body: `<p>${chipAbout(def.id) ?? ""}</p>
-          ${kv("Сейчас", mode)}
-          <div class="eyebrow">содержимое (адрес → слово, шестнадцатеричное)</div>
-          <div class="rom-grid">${cells}</div>
-          <p class="sub">Содержимое меняют только сигналы на выводах. Без питания оно пропадает, после включения в ячейках что попало — как у настоящей.</p>
-          <div class="eyebrow">выводы (потенциал)</div>${rows}
-          <p class="sub">Заводская, по даташиту SN74LS219A: выходы и входы TTL, питание 4,5–5,5 В, потребляет около 35 мА.</p>`,
-      };
-    }
-    // ПЗУ: вместо начинки — таблица содержимого (прошивка), текущее слово подсвечено
-    if (def.id === PROM_ID) {
-      const high = (p: number) => {
-        const v = volts(p - 1), g = volts(7);
-        return v !== undefined && g !== undefined && v - g > 1.4;
-      };
-      const addr = [10, 11, 12, 13, 14].reduce((m, p, i) => m | (high(p) ? 1 << i : 0), 0);
-      const cells = Array.from({ length: PROM_WORDS }, (_, a) => {
-        const w = promWord(c.data, a);
-        return `<label class="rom-cell${a === addr && !high(15) ? " now" : ""}" title="Адрес ${a} (${a.toString(2).padStart(5, "0")}): ${w.toString(2).padStart(8, "0")} = ${w}"><span>${a.toString(16).toUpperCase().padStart(2, "0")}</span><input class="btn" type="text" maxlength="10" data-field="rom:${a}" value="${hex2(w)}" aria-label="Слово по адресу ${a}" /></label>`;
-      }).join("");
-      return {
-        title: def.name,
-        body: `<p>${chipAbout(def.id) ?? ""}</p>
-          <div class="eyebrow">содержимое (адрес → слово, шестнадцатеричное)</div>
-          <div class="rom-grid">${cells}</div>
-          <p class="sub">Впишите слово: шестнадцатеричное (3F), восемь двоичных цифр (00111111) или десятичное с d (d63). Подсвечено слово, которое сейчас на выходах. Содержимое у каждой такой микросхемы своё и сохраняется в проекте.</p>
-          <div class="eyebrow">выводы (потенциал)</div>${rows}
-          <p class="sub">Заводская, по даташиту DM74S288: выходы и входы TTL, питание 4,5–5,5 В, потребляет около 70 мА.</p>`,
-        editor: `<div class="row"><button class="btn inline" data-act="romClear">Стереть всё (нули)</button></div>`,
-      };
-    }
+    const mem = memoryInfo(def.id);
+    if (mem) return memoryPanel(c, sim, def, mem, rows, volts);
     const burned = def.parts.filter((p) => sim.state(`${c.id}/${p.id}`).burned).map((p) => p.id);
     const k = countChip(def, sim.scene);
     return {
@@ -349,11 +315,108 @@ function defSupply(c: Chip, def: ChipDef, sim: Simulation): number | undefined {
 /** Ниже такого питания, В, ОЗУ забывает всё (у настоящих TTL-ОЗУ — задолго до нуля). */
 const RAM_KEEP = 2;
 
+/** Какую страницу памяти (по 256 слов) показывает панель, по микросхемам. */
+const memPage = new Map<string, number>();
+const PAGE = 256;
+
+/**
+ * Панель памяти: что сейчас на выводах и содержимое страницами по 256 слов. ПЗУ и EEPROM — правятся
+ * (прошивка сохраняется в проекте), ОЗУ — только посмотреть: оно в расчёте и без питания пропадает.
+ */
+function memoryPanel(c: Chip, sim: Simulation, def: ChipDef, mem: MemoryInfo, rows: string, volts: (i: number) => number | undefined) {
+  const model = mem.model;
+  const g = volts(model.gnd - 1);
+  const high = (p: number) => {
+    const v = volts(p - 1);
+    return v !== undefined && g !== undefined && v - g > 1.4;
+  };
+  const addr = mem.addrPins.reduce((m, p, i) => m | (high(p) ? 1 << i : 0), 0);
+  const selected = !high(mem.selectPin);
+  const ram = mem.kind === "ram" ? (sim.memory.get(`${c.id}:ram`) as number[] | undefined) : undefined;
+  const pages = Math.ceil(mem.words / PAGE);
+  const page = Math.min(memPage.get(c.id) ?? (selected ? Math.floor(addr / PAGE) : 0), pages - 1);
+  const from = page * PAGE, to = Math.min(mem.words, from + PAGE);
+  const digits = mem.width > 4 ? 2 : 1;
+  const aDigits = Math.max(2, (mem.words - 1).toString(16).length);
+  const hex = (w: number) => w.toString(16).toUpperCase().padStart(digits, "0");
+  const busy = sim.memory.get(`${c.id}:eeBusy`) as { until: number } | undefined;
+  const cells = Array.from({ length: to - from }, (_, i) => {
+    const a = from + i;
+    const now = a === addr && selected ? " now" : "";
+    const label = `<span>${a.toString(16).toUpperCase().padStart(aDigits, "0")}</span>`;
+    if (mem.kind === "ram") {
+      const w = ram?.[a];
+      return `<label class="rom-cell${ram ? now : ""}" title="Адрес ${a}${w === undefined ? "" : `: ${w.toString(2).padStart(mem.width, "0")}`}">${label}<input class="btn" type="text" readonly value="${w === undefined ? "—" : hex(w)}" aria-label="Слово по адресу ${a}" /></label>`;
+    }
+    const w = memWord(mem, c.data, a);
+    return `<label class="rom-cell${now}" title="Адрес ${a}: ${w.toString(2).padStart(mem.width, "0")} = ${w}">${label}<input class="btn" type="text" maxlength="10" data-field="rom:${a}" value="${digits === 2 ? hex2(w) : hex(w)}" aria-label="Слово по адресу ${a}" /></label>`;
+  }).join("");
+  const pager = pages > 1
+    ? `<div class="field"><label for="f-rompage">Страница (адреса ${from.toString(16).toUpperCase().padStart(aDigits, "0")}…${(to - 1).toString(16).toUpperCase().padStart(aDigits, "0")})</label><input id="f-rompage" class="btn" type="number" min="0" max="${pages - 1}" data-field="rompage" value="${page}" /></div><p class="sub">Всего ${pages} страниц по ${PAGE} слов; номер страницы — старшие биты адреса.</p>`
+    : "";
+  const mode = mem.kind === "ram"
+    ? !ram ? "нет питания" : !selected ? "не выбрана" : `адрес ${addr}`
+    : busy && sim.time < busy.until ? `идёт запись (ещё ${Math.ceil((busy.until - sim.time) * 1000)} мс): чтение — опрос` : selected ? `адрес ${addr}` : "не выбрана";
+  const note = mem.kind === "ram"
+    ? "Содержимое меняют только сигналы на выводах. Без питания оно пропадает, после включения в ячейках что попало — как у настоящей."
+    : mem.kind === "eeprom"
+      ? "Впишите слово: шестнадцатеричное (3F), восемь двоичных цифр (00111111) или десятичное с d (d63) — как программатором. Схема тоже может писать: импульс W̅E̅ при C̅E̅ = 0 и O̅E̅ = 1, байт ложится за 10 мс; пока идёт запись, на I/O7 — обратный записанному бит. Содержимое сохраняется в проекте и без питания."
+      : "Впишите слово: шестнадцатеричное (3F), восемь двоичных цифр (00111111) или десятичное с d (d63). Подсвечено слово, которое сейчас на выходах. Содержимое у каждой такой микросхемы своё и сохраняется в проекте.";
+  return {
+    title: def.name,
+    body: `<p>${chipAbout(def.id) ?? ""}</p>
+      ${kv("Сейчас", mode)}
+      ${pager}
+      <div class="eyebrow">содержимое (адрес → слово, шестнадцатеричное)</div>
+      <div class="rom-grid">${cells}</div>
+      <p class="sub">${note}</p>
+      <div class="eyebrow">выводы (потенциал)</div>${rows}
+      <p class="sub">Заводская, по даташиту ${mem.source}.</p>`,
+    ...(mem.kind === "ram" ? {} : { editor: `<div class="row"><button class="btn inline" data-act="romClear">Стереть всё (${mem.blank ? "единицы" : "нули"})</button></div>` }),
+  };
+}
+
+/**
+ * EEPROM после установившегося расчёта: запись байта на фронте W̅E̅ (см. ChipModel.eeprom) — если
+ * питание выше порога, прошло время после включения и прежний цикл закончился. Байт ложится в
+ * прошивку (Chip.data), идёт цикл twc.
+ */
+function eepromCommit(c: Chip, model: ChipModel, sim: Simulation): void {
+  const ee = model.eeprom!;
+  const span = supply(c, model, sim) ?? 0;
+  const onKey = `${c.id}:eeOn`;
+  if (span < ee.vsense) {
+    sim.memory.delete(onKey);
+    return;
+  }
+  if (!sim.memory.has(onKey)) sim.memory.set(onKey, sim.time);
+  const prev = sim.memory.get(`${c.id}:seq`) as ModelState | undefined;
+  const now = inputLevels(c, model, sim, prev);
+  if (!prev || now.some((l) => l === undefined)) return;
+  const busy = sim.memory.get(`${c.id}:eeBusy`) as { until: number } | undefined;
+  if (busy && sim.time < busy.until) return;
+  if (sim.time - (sim.memory.get(onKey) as number) < ee.powerOn) return;
+  const w = ee.write(prev.inputs, now as boolean[]);
+  if (!w) return;
+  const data = c.data ? [...c.data] : [];
+  for (let i = data.length; i <= w[0]; i++) data[i] = ee.blank;
+  data[w[0]] = w[1];
+  c.data = data;
+  sim.memory.set(`${c.id}:eeBusy`, { until: sim.time + ee.twc, last: w[1] });
+}
+
 /**
  * Содержимое памяти для модели: у ПЗУ — прошивка этой микросхемы (Chip.data), у ОЗУ — то, что
  * лежит в расчёте; нет (только что включили) — мусор, своё для каждого включения.
  */
 function memData(c: Chip, model: ChipModel, sim: Simulation): number[] | undefined {
+  if (model.eeprom) {
+    // Идёт цикл записи: чтение — опрос. I/O7 — дополнение записанного, I/O6 — меняется
+    const busy = sim.memory.get(`${c.id}:eeBusy`) as { until: number; last: number } | undefined;
+    if (!busy || sim.time >= busy.until) return c.data;
+    const poll = (busy.last & 0x3f) | (~busy.last & 0x80) | ((Math.floor(sim.time * 1000) & 1) << 6);
+    return new Proxy([] as number[], { get: (t, k) => (typeof k === "string" && /^\d+$/.test(k) ? poll : Reflect.get(t, k)) });
+  }
   if (!model.ram) return c.data;
   const key = `${c.id}:ram`;
   let d = sim.memory.get(key) as number[] | undefined;
@@ -443,7 +506,8 @@ function chipView(c: Chip): ComponentView {
   } else {
     const offsets = pinOffsets(c.package, c.pins);
     const len = Math.max(...offsets.map(([a]) => a)) + 1;
-    base = offsets.map(([along, across]) => new THREE.Vector3(along - (len - 1) / 2, mm(0.3), across === 0 ? 1.5 : -1.5));
+    const half = c.package === "DIPW" ? 3 : 1.5;
+    base = offsets.map(([along, across]) => new THREE.Vector3(along - (len - 1) / 2, mm(0.3), across === 0 ? half : -half));
     pins = base.map((p) => freeTransform(c, p));
     group.position.set(c.placement.x, 0, c.placement.z);
     group.rotation.y = c.placement.rot;
@@ -454,7 +518,9 @@ function chipView(c: Chip): ComponentView {
   const u = base[k - 1].clone().sub(base[0]).setY(0).normalize(); // вдоль ряда выводов 1…k
   const v = base[0].clone().sub(base[c.pins - 1]).setY(0).normalize(); // поперёк: от второго ряда к первому
   const body = new THREE.Group();
-  const L = k - 0.25, W = mm(6.35), T = mm(3.3);
+  // Корпус: 6,35 мм у DIP на 300 мил, 14 мм у DIP на 600 мил (AT28C256: 13,5…14,4)
+  const half = c.package === "DIPW" ? 3 : 1.5;
+  const L = k - 0.25, W = mm(c.package === "DIPW" ? 14 : 6.35), T = mm(3.3);
   const top = new THREE.MeshStandardMaterial({ map: nameTexture(c.name, k), roughness: 0.55 });
   const side = new THREE.MeshStandardMaterial({ color: 0x1c1e21, roughness: 0.55 });
   const box = new THREE.Mesh(new THREE.BoxGeometry(L, T, W), [side, side, top, side, side, side]);
@@ -468,7 +534,7 @@ function chipView(c: Chip): ComponentView {
   for (const p of base) {
     const toward = p.clone().sub(center).setY(0);
     const across = v.clone().multiplyScalar(Math.sign(toward.dot(v)) || 1);
-    const edge = p.clone().addScaledVector(across, -(1.5 - W / 2 - mm(0.2))).setY(y - T / 4);
+    const edge = p.clone().addScaledVector(across, -(half - W / 2 - mm(0.2))).setY(y - T / 4);
     group.add(lead([edge, p.clone().setY(y - T / 4), p.clone().setY(Hs + mm(1)), p.clone().setY(Hs - 0.2)], mm(0.25)));
   }
   tagPickable(group, c.id);

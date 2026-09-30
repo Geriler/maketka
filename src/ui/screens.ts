@@ -12,6 +12,7 @@ import { metricsHtml } from "./career";
 import { PIN_ROLES } from "../chips/roles";
 import { packageName } from "../model/breadboard";
 import { plural } from "../chips/count";
+import { memoryInfo } from "../chips/memory";
 
 const esc = (t: string) => t.replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/"/g, "&quot;");
 
@@ -322,7 +323,7 @@ export class CareerMap {
     // ПЗУ в наборе — стрелка от уровня, который его открывает
     // Проект, идущий за другим (8-битный процессор за 4-битным), — одна стрелка от него
     for (const pr of PROJECTS) if (pr.after) edge(pr.after, pr.id, isDone(pr.after));
-    for (const pr of PROJECTS.filter((x) => !x.after)) link(pr.id, pr.kit.flatMap((k): LogicFunc[] => (k.part === "chip" ? [k.func] : k.part === "other" && k.type === "chip" ? (k.tool.includes("prom") ? ["rom8"] : k.tool.includes("ram") ? ["ram4"] : []) : [])), (src) => PLACE[src][0] < 4);
+    for (const pr of PROJECTS.filter((x) => !x.after)) link(pr.id, pr.kit.flatMap((k): LogicFunc[] => (k.part === "chip" ? [k.func] : k.part === "other" && k.type === "chip" ? (memoryInfo(k.tool.replace(/^chip:/, ""))?.opener ? [memoryInfo(k.tool.replace(/^chip:/, ""))!.opener as LogicFunc] : []) : [])), (src) => PLACE[src][0] < 4);
     const nodes = [
       `<g class="node done root" data-node="parts" transform="translate(${at("parts").x} ${at("parts").y})"><rect width="${W}" height="${H}" rx="10"/><text x="14" y="27" class="t">Детали</text><text x="14" y="47" class="s">транзисторы и резисторы</text></g>`,
       ...LESSONS.map((l, i) => {

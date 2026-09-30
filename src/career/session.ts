@@ -9,7 +9,7 @@ import { chipTool } from "../parts/chip";
 import { chipFunc, chipLevel, kitUsed, type Metrics } from "./build";
 import { FUNC_NAMES, LEVELS, SMD_TWIN, kitLabel, levelById, smdKitLabel, type KitItem, type Level } from "./levels";
 import { caseOf } from "../chips/package";
-import { PROM_ID, RAM_ID } from "../chips/memory";
+import { memoryInfo } from "../chips/memory";
 import type { Lesson } from "./lessons";
 import { stageById } from "./repairs";
 
@@ -132,16 +132,13 @@ export function missing(level: Level | Lesson): string[] {
     .filter((k) => !careerDefs().some((d) => chipFunc(d.id) === k.func))
     .map((k) => FUNC_NAMES[k.func]);
   // Память (ПЗУ, ОЗУ) в набор идёт заводской — открывают её свои уровни
-  const memory = level.kit.flatMap((k) => (k.part === "other" && k.type === "chip" && k.tool === `chip:${MEMORY_OPENER[0][0]}` && !isDone(MEMORY_OPENER[0][1]) ? ["ПЗУ 74S288"] : k.part === "other" && k.type === "chip" && k.tool === `chip:${MEMORY_OPENER[1][0]}` && !isDone(MEMORY_OPENER[1][1]) ? ["ОЗУ 74LS219"] : []));
+  const memory = level.kit.flatMap((k) => {
+    const m = k.part === "other" && k.type === "chip" ? memoryInfo(k.tool.replace(/^chip:/, "")) : undefined;
+    return m && !isDone(m.opener) ? [m.label] : [];
+  });
   const before = "after" in level && level.after && !isDone(level.after) ? [`проект «${stageById(level.after)?.title ?? level.after}»`] : [];
   return [...chips, ...memory, ...before];
 }
-
-/** Какой уровень открывает заводскую память: ПЗУ — «ПЗУ на диодах», ОЗУ — «ОЗУ 4 × 4». */
-export const MEMORY_OPENER: [string, string][] = [
-  [PROM_ID, "rom8"],
-  [RAM_ID, "ram4"],
-];
 
 // ─── Текущий уровень ─────────────────────────────────────────────────────────
 
