@@ -183,6 +183,7 @@ function baseTool(k: KitItem, smd = false): { tool: ToolDef; preset: Record<stri
   if (smd && (k.part === "mosfet" || k.part === "bjt")) return [{ tool: find(k.part === "mosfet" ? "fet" : "bjt"), preset: { kind: SMD_TWIN[k.kind] ?? k.kind } }];
   if (smd && k.part === "resistor") return [{ tool: find("smd"), preset: { ohms: k.ohms, smdSize: "0805" } }];
   if (smd && k.part === "other" && k.type === "capacitor") return [{ tool: find(k.tool), preset: { ...k.preset, smd: true } }];
+  if (smd && k.part === "other" && k.type === "chip" && find(k.tool)) return [{ tool: find(k.tool), preset: { ...k.preset, smd: true } }];
   if (k.part === "mosfet") return [{ tool: find("fet"), preset: { kind: k.kind } }];
   if (k.part === "bjt") return [{ tool: find("bjt"), preset: { kind: k.kind } }];
   if (k.part === "resistor") return [{ tool: find("tht"), preset: { ohms: k.ohms, watts: 0.25 } }];
@@ -204,7 +205,8 @@ export function kitTools(scene: Scene): { id: string; type: string; def: ToolDef
   const kit = activeKit(scene);
   if (!kit) return [];
   const used = kitUsed(kit, scene);
-  const smd = !!caseOf(scene)?.smd;
+  // Корпус с полем под SMD или стол с платой под SMD (проект): детали набора — в SMD-корпусах
+  const smd = !!caseOf(scene)?.smd || (!scene.career?.level && !!scene.boards?.some((b) => b.kind === "smd"));
   const name = smd ? smdKitLabel : kitLabel;
   return kit.flatMap((k, row) =>
     baseTool(k, smd).map(({ tool, preset }, j) => {

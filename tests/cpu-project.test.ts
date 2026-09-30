@@ -5,6 +5,8 @@ import type { Component, Endpoint, Scene } from "../src/model/types";
 import { referenceChips } from "../src/career/build";
 import { memoryChips, PROM_ID } from "../src/chips/memory";
 import { CPU_PINS, CPU_PROGRAM, PROJECTS, cpuEmulate } from "../src/career/projects";
+import { kitTools } from "../src/career/session";
+import cpuSmd from "./fixtures/cpu-smd.json";
 
 setLibrary([]);
 const refs = [...referenceChips(), ...memoryChips()];
@@ -93,4 +95,47 @@ describe("проект «Процессор»", () => {
     const steps = check(cpu(CPU_PROGRAM, (w) => w.map(([a, b]): [Endpoint, Endpoint] => (same(a, P("ROM", 7)) && same(b, P("N4", 2)) ? [P("ROM", 6), b] : [a, b]))));
     expect(steps.every((x) => x.ok), text(steps)).toBe(false);
   }, 300000);
+
+  // Разводка на плате под SMD (сделана скриптом-трассировщиком): дорожки, узлы и перемычки-мостики
+  // над чужими дорожками. Микросхемы в ней — «career:…» (открытые игроком), здесь — эталонные «ref:…».
+  const smdBuild = (drop?: string): Scene => {
+    const s = PROJECTS.find((p) => p.id === "proj-cpu")!.start();
+    s.boards = [structuredClone(cpuSmd.board) as NonNullable<Scene["boards"]>[number]];
+    s.components.push(...(structuredClone(cpuSmd.components) as Component[]).map((c) => (c.type === "chip" ? { ...c, def: c.def.replace(/^career:/, "ref:") } : c)));
+    s.traces = structuredClone(cpuSmd.traces);
+    s.wires.push(...(structuredClone(cpuSmd.wires) as Scene["wires"]).filter((w) => w.id !== drop));
+    s.chips = allChips;
+    applyBoards(s.boards!);
+    return s;
+  };
+  it("разводка на плате под SMD: все микросхемы в SOIC/SOT-23, перемычки прямые, выходы — на J6…J9", () => {
+    const s = smdBuild();
+    expect(s.boards![0].kind).toBe("smd");
+    const chips = s.components.filter((c) => c.type === "chip") as (Component & { package: string; smd?: boolean })[];
+    expect(chips.length).toBe(10);
+    expect(chips.every((c) => c.placement.mode === "board" && (c.package !== "DIP" || c.smd === true))).toBe(true);
+    const jumpers = cpuSmd.wires;
+    expect(jumpers.length).toBeGreaterThan(0);
+    expect(jumpers.every((w) => w.shape === "flat" && "hole" in w.a && "hole" in w.b)).toBe(true);
+    expect(CPU_PINS.out).toEqual(["s:J6", "s:J7", "s:J8", "s:J9"]);
+  });
+  it("разводка на плате под SMD проходит проверку", () => {
+    const steps = check(smdBuild());
+    expect(steps.every((x) => x.ok), text(steps)).toBe(true);
+  }, 300000);
+  it("разводка на плате под SMD без одной перемычки — не проходит", () => {
+    const steps = check(smdBuild("WJ5"));
+    expect(steps.every((x) => x.ok), text(steps)).toBe(false);
+  }, 300000);
+  it("набор проекта на плате под SMD: резисторы 0805, ПЗУ — в SOIC", () => {
+    const s = PROJECTS.find((p) => p.id === "proj-cpu")!.start();
+    applyBoards(s.boards!);
+    const made = kitTools(s).map((t) => t.def.create(t.def.settings) as Component & { smd?: boolean; variant?: string; smdSize?: string });
+    const res = made.filter((c) => c.type === "resistor");
+    expect(res.length).toBeGreaterThan(0);
+    expect(res.every((c) => c.variant === "smd" && c.smdSize === "0805")).toBe(true);
+    const prom = made.filter((c) => c.type === "chip" && c.def === PROM_ID);
+    expect(prom.length).toBe(1);
+    expect(prom[0].smd).toBe(true);
+  });
 });
