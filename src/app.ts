@@ -1341,7 +1341,7 @@ export class App {
         <button class="btn inline" data-career-bar="check">Проверить</button>
         <button class="btn inline" data-career-bar="leave">К карте</button>`;
     } else if (this.careerLesson()) {
-      this.careerBar.innerHTML = `<span class="path"><small>${this.careerLesson()!.repair ? "ремонт" : "введение"}</small> ${this.careerLesson()!.title}</span>
+      this.careerBar.innerHTML = `<span class="path"><small>${this.careerLesson()!.repair ? "ремонт" : this.careerLesson()!.project ? "проект" : "введение"}</small> ${this.careerLesson()!.title}</span>
         <button class="btn inline" data-career-bar="task">Задание</button>
         <button class="btn inline" data-career-bar="check">Проверить</button>
         <button class="btn inline" data-career-bar="leave">К карте</button>`;
