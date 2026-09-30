@@ -52,6 +52,7 @@ import { formatSI } from "./sim/resistorCodes";
 import { Simulation, heatThreshold, pinNode } from "./sim/simulation";
 import { NO_TOLERANCE, type Tolerance } from "./sim/tolerance";
 import { isSeated, smdView } from "./view/smd";
+import { foreignContacts } from "./model/copper";
 import { MAX_WIRE_LAYERS, buildComponentView, buildTraceView, buildWireView, wireLifts, type ComponentView, type WireView } from "./view/builders";
 import { PARTS, dropUnknownParts, part, pinLabelOf, pinsOf } from "./parts";
 import type { World } from "./view/world";
@@ -2090,16 +2091,25 @@ export class App {
     const traces = (this.scene.traces ??= []);
     // Дорожка, проходящая по площадкам, соединяется с каждой из них — делим на отрезки
     const pads = padsAlong(this.pendingPad.id, h.id);
+    const added: string[] = [];
     for (let i = 0; i < pads.length - 1; i++) {
       const [a, b] = [pads[i], pads[i + 1]];
       if (!traces.some((t) => (t.a === a && t.b === b) || (t.a === b && t.b === a))) {
-        traces.push({ id: this.nextTraceId(), a, b });
+        const id = this.nextTraceId();
+        traces.push({ id, a, b });
+        added.push(id);
       }
     }
     this.pendingPad = h;
     this.clearGhost();
     this.changed();
     this.updateHint();
+    // Медь, задевшая чужую медь, с ней соединяется — сказать сразу, пока видно, где
+    const touched = foreignContacts(this.scene).filter((k) => added.includes(k.trace) || ("trace" in k.other && added.includes(k.other.trace)));
+    if (touched.length) {
+      const what = [...new Set(touched.map((k) => ("hole" in k.other ? holeLabel(k.other.hole) : `дорожку ${added.includes(k.trace) ? (k.other as { trace: string }).trace : k.trace}`)))];
+      this.setHint(`Новая дорожка задевает ${what.slice(0, 3).join(", ")}${what.length > 3 ? ` и ещё ${what.length - 3}` : ""}: медь соединилась — цепи замкнуты. Через дорожку переходят <b>перемычкой</b> (провод формы «прямая»); отменить — Ctrl+Z.`);
+    }
   }
 
   /** Перестроить сцену в следующем кадре (не чаще раза за кадр — при перетаскивании). */

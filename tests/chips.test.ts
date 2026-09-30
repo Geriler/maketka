@@ -53,17 +53,21 @@ beforeEach(() => setLibrary([]));
  */
 function divider(): ChipDef {
   const inner = scene(
-    [bat(), R("R1", 10_000, "k:A1", "k:A2"), R("R2", 10_000, "k:C1", "k:C2")],
+    [bat(), R("R1", 10_000, "k:H3", "k:H4"), R("R2", 10_000, "k:A6", "k:A7")],
     [
       [pin("GB1", 1), hole("k:1")],
       [pin("GB1", 0), hole("k:3")],
     ],
     [box(4, { 1: "vcc", 2: ["out", "MID"], 3: "gnd" })],
+    // Дорожки — от площадки к соседней, как их кладёт инструмент: медь не задевает чужие площадки
     [
-      ["k:1", "k:A1"],
-      ["k:A2", "k:C1"],
-      ["k:2", "k:A2"],
-      ["k:C2", "k:3"],
+      ["k:1", "k:H3"],
+      ["k:H4", "k:H5"],
+      ["k:H5", "k:H6"],
+      ["k:H6", "k:H7"],
+      ["k:2", "k:H7"],
+      ...["H", "G", "F", "E", "D", "C", "B"].map((r, i, rows): [string, string] => [`k:${r}6`, `k:${rows[i + 1] ?? "A"}6`]),
+      ["k:3", "k:A7"],
     ],
   );
   expect(packageProblems(inner)).toEqual([]);

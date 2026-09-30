@@ -66,8 +66,8 @@ const same = (a: Endpoint, b: Endpoint) => JSON.stringify(a) === JSON.stringify(
 
 describe("проект «Процессор»", () => {
   it("эмулятор: по командам вручную", () => {
-    // 1: A=9; 2: A=0 (перенос); 3: вывод 0; 4: A=10; 5: вывод 10, A=2; 6: вывод 2, на 3; 7: A=12; 8: вывод 12, A=2; 9: вывод 2
-    expect(cpuEmulate(CPU_PROGRAM, 9)).toEqual([0, 0, 0, 0, 10, 2, 2, 12, 2]);
+    // 1: A=10; 2: A=15; 3: вывод 15, A=0 (перенос); 4: A=14; 5: вывод 14, A=5; 6: на 15; 7: вывод 5, на 1; 8: A=10; 9: вывод 10, A=11
+    expect(cpuEmulate(CPU_PROGRAM, 9)).toEqual([0, 0, 15, 15, 14, 14, 5, 5, 10]);
   });
   it("эталон проходит", () => {
     const t0 = performance.now();
@@ -76,9 +76,9 @@ describe("проект «Процессор»", () => {
     expect(steps.every((x) => x.ok), text(steps)).toBe(true);
   }, 300000);
   it("не та программа — сразу говорит об этом", () => {
-    const steps = check(cpu([0x29, 0x37, 0x51, 0x3a, 0x62, 0xc3]));
+    const steps = check(cpu(CPU_PROGRAM.map((w, a) => (a === 2 ? 0x70 : w))));
     expect(steps[0].ok).toBe(false);
-    expect(steps[0].text).toContain("2 → 51");
+    expect(steps[0].text).toContain("2 → 70");
   }, 60000);
   it("разрешение записи A без инвертора — не проходит", () => {
     const steps = check(cpu(CPU_PROGRAM, (w) => w.map(([a, b]): [Endpoint, Endpoint] => (same(a, P("N3", 4)) && same(b, P("RA", 9)) ? [P("ROM", 6), b] : [a, b]))));
@@ -91,6 +91,26 @@ describe("проект «Процессор»", () => {
       expect(steps.every((x) => x.ok), text(steps)).toBe(false);
     }, 300000);
   }
+  // Обрывы, которых прежняя программа не замечала: младший бит, биты загрузки счётчика, висящее разрешение
+  const drop = (a: Endpoint, b: Endpoint) => (w: [Endpoint, Endpoint][]) => w.filter(([x, y]) => !(same(x, a) && same(y, b)));
+  for (const [what, a, b] of [
+    ["D3 загрузки счётчика (PC.6)", P("ROM", 4), P("PC", 6)],
+    ["выход OUT0", P("RO", 3), { hole: CPU_PINS.out[0] }],
+    ["A0 на вход сумматора", P("RA", 3), P("AD", 5)],
+    ["N2 на вход мультиплексора", P("ROM", 3), P("MX", 11)],
+  ] as [string, Endpoint, Endpoint][]) {
+    it(`без провода «${what}» — не проходит`, () => {
+      // Висящий вход ловит свой шаг; здесь важно, что и сама программа замечает обрыв
+      const steps = check(cpu(CPU_PROGRAM, drop(a, b)));
+      expect(steps.find((x) => x.text.startsWith("Такт за тактом"))?.ok, text(steps)).toBe(false);
+    }, 300000);
+  }
+  it("разрешение выхода регистра не подключено — вход висит в воздухе, не проходит", () => {
+    const steps = check(cpu(CPU_PROGRAM, drop(minus, P("RA", 1))));
+    const step = steps.find((x) => x.text.includes("висят"));
+    expect(step?.ok).toBe(false);
+    expect(step?.text).toContain("RA.1");
+  }, 300000);
   it("вывод по биту записи (5 вместо 6) — не проходит", () => {
     const steps = check(cpu(CPU_PROGRAM, (w) => w.map(([a, b]): [Endpoint, Endpoint] => (same(a, P("ROM", 7)) && same(b, P("N4", 2)) ? [P("ROM", 6), b] : [a, b]))));
     expect(steps.every((x) => x.ok), text(steps)).toBe(false);
@@ -126,6 +146,14 @@ describe("проект «Процессор»", () => {
   it("разводка на плате под SMD без одной перемычки — не проходит", () => {
     const steps = check(smdBuild("WJ5"));
     expect(steps.every((x) => x.ok), text(steps)).toBe(false);
+  }, 300000);
+  it("дорожка поперёк чужой площадки (J1 → J3 через J2) — медь замкнула цепи, не проходит", () => {
+    const s = smdBuild();
+    s.traces!.push({ id: "TRX", a: "s:J1", b: "s:J3" });
+    const steps = check(s);
+    const step = steps.find((x) => x.text.startsWith("Медь"));
+    expect(step?.ok, text(steps)).toBe(false);
+    expect(step?.text).toContain("J2");
   }, 300000);
   it("набор проекта на плате под SMD: резисторы 0805, ПЗУ — в SOIC", () => {
     const s = PROJECTS.find((p) => p.id === "proj-cpu")!.start();

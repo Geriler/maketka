@@ -4,6 +4,7 @@
  */
 
 import { HOLE_BY_ID, fineTrace } from "../model/breadboard";
+import { copperContacts } from "../model/copper";
 import { FINE_TRACE_OHM_PER_MM, FLAT_WIRE_EXTRA, TRACE_OHM_PER_MM, WIRE_OHM_PER_MM, isFlatWire, jumperPoints, type Component, type ComponentState, type Endpoint, type Mosfet, type Scene, type Transistor, type WireBend, type WireShape } from "../model/types";
 import { resolveChip } from "../chips/registry";
 import { PARTS, part } from "../parts";
@@ -52,6 +53,9 @@ export function wireResistance(scene: Scene, w: { a: Endpoint; b: Endpoint; shap
   const rise = Math.min(7, Math.max(1, 0.8 + d * 0.22));
   return (d + 2 * rise) * 2.54 * WIRE_OHM_PER_MM;
 }
+
+/** Сопротивление места, где медь касается чужой меди, Ом: сплошная медь. */
+export const COPPER_CONTACT_OHMS = 1e-3;
 
 /** Сопротивление дорожки между двумя площадками, Ом (длина в шагах 2,54 мм). */
 export function traceResistance(aId: string, bId: string): number {
@@ -229,6 +233,8 @@ export class Simulation {
     for (const t of this.scene.traces ?? []) {
       out.push({ id: t.id, a: HOLE_BY_ID.get(t.a)!.node, b: HOLE_BY_ID.get(t.b)!.node, r: t.fault?.open ? Infinity : traceResistance(t.a, t.b) });
     }
+    // Медь, которая касается чужой меди, — одно целое: пересечённые дорожки замкнуты
+    copperContacts(this.scene.traces ?? []).forEach((k, i) => out.push({ id: `copper:${i}:${k.trace}`, a: k.a, b: k.b, r: COPPER_CONTACT_OHMS }));
     return out;
   }
 

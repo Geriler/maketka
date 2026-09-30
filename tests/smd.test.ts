@@ -6,6 +6,7 @@ import { Simulation, pinNode, traceResistance } from "../src/sim/simulation";
 import { LEVELS, SMD_TWIN, type Level, type LogicFunc } from "../src/career/levels";
 import { checkLevel, kitIndex, levelCase, levelScene, recipeScene, referenceChips } from "../src/career/build";
 import { kitTools } from "../src/career/session";
+import { copperContacts } from "../src/model/copper";
 
 setLibrary([]);
 
@@ -95,11 +96,24 @@ describe("посадочные места SMD", () => {
   it("инвертор на плате под SMD: BSS84 + 2N7002 в SOT-23, дорожки, питание к площадкам J", () => {
     const b: BoardSpec = {
       id: "S1", kind: "smd", x: 0, z: 0, cols: 24, rows: 15,
-      seats: [{ id: "VT1", fp: "SOT-23", x: -4, z: -2, rot: 0 }, { id: "VT2", fp: "SOT-23", x: 4, z: -2, rot: 0 }],
+      seats: [
+        { id: "VT1", fp: "SOT-23", x: -4, z: -2, rot: 0 }, { id: "VT2", fp: "SOT-23", x: 4, z: -2, rot: 0 },
+        // Узлы-повороты дорожек: так они обходят друг друга, не касаясь
+        ...([["n1", -3.63, 4], ["n3", -4.37, 1], ["n4", 3.63, 1], ["n5", 4.37, 2], ["n6", 6, -2.43]] as const).map(([id, x, z]) => ({ id, fp: "NODE" as const, x, z, rot: 0 })),
+      ],
     };
     applyBoards([b]);
     const holes = (id: string) => [1, 2, 3].map((n) => `s:${id}.${n}`);
-    const tr: [string, string][] = [["s:VT1.2", "s:J1"], ["s:VT2.2", "s:J2"], ["s:VT1.1", "s:J5"], ["s:VT2.1", "s:J5"], ["s:VT1.3", "s:J10"], ["s:VT2.3", "s:J10"]];
+    // +5 В: исток BSS84 вниз к J8; общий: исток 2N7002 вниз к J16; стоки — вправо и вниз к выходу
+    // J18; затворы — к входу J5, а друг с другом — перемычкой: без неё дорожка затворов заперла бы
+    // исток BSS84 (на одном слое два транзистора инвертора без пересечения не развести)
+    const tr: [string, string][] = [
+      ["s:VT1.2", "s:n1.1"], ["s:n1.1", "s:J8"],
+      ["s:VT2.2", "s:n5.1"], ["s:n5.1", "s:J16"],
+      ["s:VT1.1", "s:n3.1"], ["s:VT2.1", "s:n4.1"], ["s:n3.1", "s:J5"],
+      ["s:VT1.3", "s:VT2.3"], ["s:VT2.3", "s:n6.1"], ["s:n6.1", "s:J18"],
+    ];
+    expect(copperContacts(tr.map(([a, c], i) => ({ id: `T${i}`, a, b: c })))).toEqual([]);
     const scene: Scene = {
       components: [
         { id: "G1", type: "psu", volts: 5, amps: 1, on: true, placement: { mode: "free", x: 0, z: 20, rot: 0 } },
@@ -107,17 +121,18 @@ describe("посадочные места SMD", () => {
         { id: "VT2", type: "mosfet", kind: "2N7002", placement: { mode: "board", holes: holes("VT2") } },
       ],
       wires: [
-        { id: "W1", a: { comp: "G1", pin: 1 }, b: { hole: "s:J1" }, color: "" },
-        { id: "W2", a: { comp: "G1", pin: 0 }, b: { hole: "s:J2" }, color: "" },
+        { id: "W1", a: { comp: "G1", pin: 1 }, b: { hole: "s:J8" }, color: "" },
+        { id: "W2", a: { comp: "G1", pin: 0 }, b: { hole: "s:J16" }, color: "" },
+        { id: "WJ", a: { hole: "s:n3.1" }, b: { hole: "s:n4.1" }, color: "", shape: "flat" },
       ],
       traces: tr.map(([a, b2], i) => ({ id: `T${i}`, a, b: b2 })),
       boards: [b],
     };
     const out = (input: 0 | 1) => {
-      scene.wires = scene.wires.slice(0, 2).concat({ id: "W3", a: { comp: "G1", pin: input }, b: { hole: "s:J5" }, color: "" });
+      scene.wires = scene.wires.slice(0, 3).concat({ id: "W3", a: { comp: "G1", pin: input }, b: { hole: "s:J5" }, color: "" });
       const sim = new Simulation(scene);
       sim.solve();
-      return sim.solution.voltage.get(HOLE_BY_ID.get("s:J10")!.node)! - sim.solution.voltage.get(pinNode(scene.components[0], 0))!;
+      return sim.solution.voltage.get(HOLE_BY_ID.get("s:J18")!.node)! - sim.solution.voltage.get(pinNode(scene.components[0], 0))!;
     };
     expect(out(0)).toBeGreaterThan(4.9);
     expect(out(1)).toBeLessThan(0.1);

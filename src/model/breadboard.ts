@@ -527,8 +527,13 @@ export const HOLE_BY_ID = new Map<string, Hole>();
 /** Платы на столе сейчас (копии; менять через applyBoards). */
 export const BOARDS: BoardSpec[] = [];
 
+/** Сколько раз перестраивались отверстия: по нему кэши геометрии знают, что платы сменились. */
+let boardsRevision = 0;
+export const boardsVersion = () => boardsRevision;
+
 /** Перестроить отверстия под набор плат. HOLES, HOLE_BY_ID и BOARDS меняются на месте. */
 export function applyBoards(boards: readonly BoardSpec[]): void {
+  boardsRevision++;
   BOARDS.length = 0;
   BOARDS.push(...boards.map((b) => ({ ...b })));
   HOLES.length = 0;

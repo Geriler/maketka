@@ -9,8 +9,11 @@ import { DISPLAY_SEGMENTS } from "../model/types";
 import { Simulation, heatThreshold } from "../sim/simulation";
 import { segmentCurrent } from "../parts/display";
 import { formatSI } from "../sim/resistorCodes";
-import { HOLE_BY_ID } from "../model/breadboard";
-import { pinNode } from "../sim/nodes";
+import { HOLE_BY_ID, holeLabel } from "../model/breadboard";
+import { foreignContacts } from "../model/copper";
+import { endpointNode, pinNode } from "../sim/nodes";
+import { pinsOf } from "../parts";
+import { resolveChip } from "../chips/registry";
 import { free, noHurt, of, type Lesson, type LessonStep } from "./lessons";
 import { SEGMENTS, type KitItem, type LogicFunc } from "./levels";
 import { PROM_ID, promWord } from "../chips/memory";
@@ -59,6 +62,40 @@ function runner(scene: Scene) {
     }
   };
   return { sim, run, hurt, disp, peak: () => peak };
+}
+
+/**
+ * Входы микросхем, которые висят в воздухе: в их цепи (провода, дорожки, перемычки, полосы макетки)
+ * нет ничего, кроме таких же входов, — ни выхода, ни питания, ни резистора, ни кнопки. Вход КМОП
+ * тогда уходит к середине питания, и что выйдет — не угадать; модель этого не всегда покажет.
+ */
+export function floatingInputs(scene: Scene): string[] {
+  const parent = new Map<string, string>();
+  const find = (x: string): string => {
+    const p = parent.get(x) ?? x;
+    if (p === x) return x;
+    const r = find(p);
+    parent.set(x, r);
+    return r;
+  };
+  const join = (a: string, b: string) => parent.set(find(a), find(b));
+  for (const w of scene.wires) if (!w.fault) join(endpointNode(scene, w.a), endpointNode(scene, w.b));
+  for (const t of scene.traces ?? []) {
+    const a = HOLE_BY_ID.get(t.a), b = HOLE_BY_ID.get(t.b);
+    if (a && b && !t.fault) join(a.node, b.node);
+  }
+  const driven = new Set<string>();
+  const inputs: [string, string][] = [];
+  for (const c of scene.components) {
+    const def = c.type === "chip" ? resolveChip(scene, c.def) : undefined;
+    for (let p = 0; p < pinsOf(c); p++) {
+      const node = find(pinNode(c, p));
+      const role = def?.pinRoles?.[p];
+      if (role === "in") inputs.push([node, `${c.id}.${p + 1}${def?.pinNames?.[p] ? ` (${def.pinNames[p]})` : ""}`]);
+      else if (role !== "nc") driven.add(node);
+    }
+  }
+  return inputs.filter(([n]) => !driven.has(n)).map(([, name]) => name);
 }
 
 /** Где светодиод по оси X стола: по отверстию первого вывода или по месту на столе. */
@@ -267,9 +304,12 @@ export const CPU_OPS = { jmp: 0x80, out: 0x40, wa: 0x20, add: 0x10 };
 /**
  * Программа проверки — каждый бит команды проявляется отдельно: загрузка числа при A ≠ 0, сложение
  * без вывода и с переносом за 15, вывод без записи и вместе с записью (выводится прежнее A), переход.
- * 0: A ← 9; 1: A ← A + 7 (= 0); 2: вывести A; 3: A ← A + 10; 4: вывести A, A ← 2; 5: вывести A, на 3.
+ * И каждый провод данных хоть раз несёт единицу: на выходе бывают 15 и нечётные, прямо в A грузятся
+ * 10 и 5 (все четыре бита), складываются 10 + 5, 15 + 1 и 0 + 14 (все биты A, N и суммы), переход —
+ * на 15 (все четыре бита загрузки счётчика). 0: A ← 10; 1: A ← A + 5; 2: вывести A, A ← A + 1 (= 0);
+ * 3: A ← A + 14; 4: вывести A, A ← 5; 5: на 15; 15: вывести A, на 1.
  */
-export const CPU_PROGRAM = [0x29, 0x37, 0x50, 0x3a, 0x62, 0xc3];
+export const CPU_PROGRAM = [0x2a, 0x35, 0x71, 0x3e, 0x65, 0x8f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0xc1];
 
 /**
  * Что будет на выходе после каждого такта (от сброса): все регистры меняются разом по фронту,
@@ -643,7 +683,7 @@ export const PROJECTS: Lesson[] = [
     project: true,
     title: "Процессор",
     about:
-      "Четырёхразрядный процессор на плате под SMD: по каждому нажатию CLK (кнопка, площадка J3 у ближнего края) выполняет одну команду из ПЗУ, RST (площадка J5) — сброс: счётчик команд, регистр A и выход — в ноль. Команда — байт ПЗУ по адресу из счётчика команд (адрес 0…15). Младшие четыре бита — число N, старшие — что делать, биты можно сочетать: бит 7 — перейти на адрес N (иначе — на следующий), бит 6 — вывести A на выход, бит 5 — записать в A, бит 4 — записывается A + N (без него — само N; перенос за 15 теряется). Всё меняется разом по фронту CLK, каждый — по тому, что было до фронта. Выход OUT0…OUT3 — площадки J6…J9 (OUT0 — младший); светодиоды — чтобы видеть. Питание 5 В — J1 (общий) и J2 (+5 В). Соединения — дорожками; где дорожке не пройти, не пересекая другие, — перемычкой. Программа проверки — впишите в ПЗУ: 0 → 29 (A ← 9), 1 → 37 (A ← A + 7, получится 0), 2 → 50 (вывести A), 3 → 3A (A ← A + 10), 4 → 62 (вывести A и A ← 2), 5 → C3 (вывести A и перейти на 3). Проверка сверяет программу, жмёт RST, потом 24 раза CLK и смотрит выход после каждого, потом RST посреди работы. ",
+      "Четырёхразрядный процессор на плате под SMD: по каждому нажатию CLK (кнопка, площадка J3 у ближнего края) выполняет одну команду из ПЗУ, RST (площадка J5) — сброс: счётчик команд, регистр A и выход — в ноль. Команда — байт ПЗУ по адресу из счётчика команд (адрес 0…15). Младшие четыре бита — число N, старшие — что делать, биты можно сочетать: бит 7 — перейти на адрес N (иначе — на следующий), бит 6 — вывести A на выход, бит 5 — записать в A, бит 4 — записывается A + N (без него — само N; перенос за 15 теряется). Всё меняется разом по фронту CLK, каждый — по тому, что было до фронта. Выход OUT0…OUT3 — площадки J6…J9 (OUT0 — младший); светодиоды — чтобы видеть. Питание 5 В — J1 (общий) и J2 (+5 В). Соединения — дорожками; где дорожке не пройти, не пересекая другие, — перемычкой. Программа проверки — впишите в ПЗУ: 0 → 2A (A ← 10), 1 → 35 (A ← A + 5), 2 → 71 (вывести A и A ← A + 1 — перенос за 15 теряется, получится 0), 3 → 3E (A ← A + 14), 4 → 65 (вывести A и A ← 5), 5 → 8F (перейти на 15), с 6 по 14 — 00, 15 → C1 (вывести A и перейти на 1). Проверка сверяет программу, смотрит, что ни один вход микросхем не висит в воздухе, жмёт RST, потом 24 раза CLK и смотрит выход после каждого, потом RST посреди работы. ",
     hints: [
       "Разберите одну команду: откуда берётся адрес, куда идёт слово из ПЗУ, что из него решает, что сделать. Какая открытая микросхема сама идёт по адресам подряд, но умеет и загрузить новый адрес?",
       "Регистрам нужны: что записать, разрешение записи и такт. Разрешения у регистров и загрузка счётчика — активным нулём, а биты команды — единицей. И что выбирает между «N» и «A + N»?",
@@ -670,8 +710,13 @@ export const PROJECTS: Lesson[] = [
       const bad = outs.findIndex((o, i) => o !== want[i]);
       const wantAgain = cpuEmulate(CPU_PROGRAM, again.length);
       const badAgain = again.findIndex((o, i) => o !== wantAgain[i]);
+      const floating = floatingInputs(scene);
+      const shorts = foreignContacts(scene);
+      const shortName = (k: (typeof shorts)[number]) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`;
       return [
         { text: "В ПЗУ — программа из описания", ok: true },
+        { text: floating.length ? `Входы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы микросхем куда-то подключены", ok: !floating.length },
+        { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
         { text: `После RST на выходе 0 — сейчас ${afterReset}`, ok: afterReset === 0 },
         { text: `Такт за тактом на выходе: ${outs.join(" ")}${bad >= 0 ? ` (на ${bad + 1}-м такте нужно ${want[bad]})` : ""}`, ok: bad < 0 },
         { text: `RST посреди работы — и снова с начала: ${again.join(" ")}${badAgain >= 0 ? ` (нужно ${wantAgain.join(" ")})` : ""}`, ok: badAgain < 0 },
