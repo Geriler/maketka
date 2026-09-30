@@ -13,6 +13,7 @@ import { HOLE_BY_ID } from "../model/breadboard";
 import { pinNode } from "../sim/nodes";
 import { free, noHurt, of, type Lesson, type LessonStep } from "./lessons";
 import { SEGMENTS, type KitItem, type LogicFunc } from "./levels";
+import { PROM_ID, promWord } from "../chips/memory";
 
 /** Две макетки рядом и блок питания 5 В: плюс и минус — на верхние шины обеих. */
 function projectBench(id: string): Scene {
@@ -251,6 +252,97 @@ export function sarRun(scene: Scene) {
     return { vin, digit: r.disp ? shownDigit(r.disp, r.sim) : -1 };
   });
   return { rows, peak: r.peak(), hurt: r.hurt };
+}
+
+// ─── Процессор: такт и сброс — кнопки стола, выход — столбцы 27–30 второй макетки ────
+
+/** Кнопки такта и сброса (нижняя половина BB1, ряд j) и выходы OUT0…OUT3 (верхняя половина BB2, ряд a). */
+export const CPU_PINS = { clk: "j2", rst: "j4", out: ["2:a27", "2:a28", "2:a29", "2:a30"] };
+
+/**
+ * Команды процессора — байт ПЗУ: старшие четыре бита — что делать, младшие — число N.
+ * Бит 7 — переход на N, 6 — вывести A, 5 — записать в A, 4 — в A пойдёт A + N (иначе N).
+ */
+export const CPU_OPS = { jmp: 0x80, out: 0x40, wa: 0x20, add: 0x10 };
+/**
+ * Программа проверки — каждый бит команды проявляется отдельно: загрузка числа при A ≠ 0, сложение
+ * без вывода и с переносом за 15, вывод без записи и вместе с записью (выводится прежнее A), переход.
+ * 0: A ← 9; 1: A ← A + 7 (= 0); 2: вывести A; 3: A ← A + 10; 4: вывести A, A ← 2; 5: вывести A, на 3.
+ */
+export const CPU_PROGRAM = [0x29, 0x37, 0x50, 0x3a, 0x62, 0xc3];
+
+/**
+ * Что будет на выходе после каждого такта (от сброса): все регистры меняются разом по фронту,
+ * каждый по тому, что было до фронта, — так и работает схема с общим тактом.
+ */
+export function cpuEmulate(rom: number[], clocks: number): number[] {
+  let pc = 0, a = 0, out = 0;
+  const outs: number[] = [];
+  for (let i = 0; i < clocks; i++) {
+    const w = rom[pc] ?? 0, n = w & 15;
+    const next = w & CPU_OPS.add ? (a + n) & 15 : n;
+    if (w & CPU_OPS.out) out = a;
+    if (w & CPU_OPS.wa) a = next;
+    pc = w & CPU_OPS.jmp ? n : (pc + 1) & 15;
+    outs.push(out);
+  }
+  return outs;
+}
+
+/** Стол процессора: кнопки CLK и RST без дребезга (к +5 В, подтяжка 10 кОм к общему). */
+function cpuBench(id: string): Scene {
+  const s = projectBench(id);
+  const plus = { comp: "G1", pin: 1 }, minus = { comp: "G1", pin: 0 };
+  ([["SB1", CPU_PINS.clk, -4], ["SB2", CPU_PINS.rst, 6]] as const).forEach(([cid, hole, x], i) => {
+    s.components.push(
+      { id: cid, type: "button", placement: free(x, 22), stock: true } as Component,
+      { id: `RS${i + 1}`, type: "resistor", variant: "tht", ohms: 10_000, smdSize: "0805", placement: free(x, 30), stock: true },
+    );
+    s.wires.push(
+      { id: `WI${i}a`, a: plus, b: { comp: cid, pin: 0 }, color: "#c8261f" },
+      { id: `WI${i}b`, a: { comp: cid, pin: 1 }, b: { hole }, color: "#e3b21c" },
+      { id: `WI${i}c`, a: { comp: cid, pin: 1 }, b: { comp: `RS${i + 1}`, pin: 0 }, color: "#e3b21c" },
+      { id: `WI${i}d`, a: { comp: `RS${i + 1}`, pin: 1 }, b: minus, color: "#1b1d20" },
+    );
+  });
+  return s;
+}
+
+/** Тактов в проверке: пять проходов цикла и ещё немного — через 15 и обратно через 0. */
+export const CPU_CLOCKS = 24;
+
+/** Прогнать процессор: сброс, такты по одному, после каждого — что на выходе; потом сброс посреди работы. */
+export function cpuRun(scene: Scene) {
+  const r = runner(scene);
+  const g1 = r.sim.scene.components.find((c) => c.id === "G1")!;
+  const v = (hole: string) => (r.sim.solution.voltage.get(HOLE_BY_ID.get(hole)!.node) ?? 0) - (r.sim.solution.voltage.get(pinNode(g1, 0)) ?? 0);
+  const out = () => CPU_PINS.out.reduce((m, h, k) => m | (v(h) > 2.5 ? 1 << k : 0), 0);
+  // В схеме из одних моделей нет ничего, что меняется со временем, — шаг её не пересчитывает;
+  // нажатие меняет схему, поэтому после него — пересчёт (как делает стол, когда жмут кнопку)
+  const press = (id: string) => {
+    r.sim.held.add(id);
+    r.sim.solve();
+    r.run(0.02);
+    r.sim.held.delete(id);
+    r.sim.solve();
+    r.run(0.02);
+  };
+  r.run(0.1);
+  press("SB2");
+  const afterReset = out();
+  const outs: number[] = [];
+  for (let i = 0; i < CPU_CLOCKS; i++) {
+    press("SB1");
+    outs.push(out());
+  }
+  // Сброс посреди работы — и снова с начала
+  press("SB2");
+  const again: number[] = [];
+  for (let i = 0; i < 6; i++) {
+    press("SB1");
+    again.push(out());
+  }
+  return { afterReset, outs, again, hurt: r.hurt };
 }
 
 const chip = (func: LogicFunc, count = 1): KitItem => ({ part: "chip", func, count });
@@ -528,6 +620,47 @@ export const PROJECTS: Lesson[] = [
       return [
         { text: `Показывает число ступенек: ${rows.map((x) => `${String(x.vin).replace(".", ",")} В → ${show(x.digit)}`).join(", ")}${bad ? ` (при ${String(bad.vin).replace(".", ",")} В нужно ${want(bad.vin)})` : ""}`, ok: !bad },
         ...displaySteps(peak, hurt),
+      ];
+    },
+  },
+  {
+    id: "proj-cpu",
+    project: true,
+    title: "Процессор",
+    about:
+      "Четырёхразрядный процессор: по каждому нажатию CLK (кнопка на столбце 2) выполняет одну команду из ПЗУ, RST (кнопка на столбце 4) — сброс: счётчик команд, регистр A и выход — в ноль. Команда — байт ПЗУ по адресу из счётчика команд (адрес 0…15). Младшие четыре бита — число N, старшие — что делать, биты можно сочетать: бит 7 — перейти на адрес N (иначе — на следующий), бит 6 — вывести A на выход, бит 5 — записать в A, бит 4 — записывается A + N (без него — само N; перенос за 15 теряется). Всё меняется разом по фронту CLK, каждый — по тому, что было до фронта. Выход OUT0…OUT3 — столбцы 27–30 второй макетки, ряд a (OUT0 — младший); светодиоды — чтобы видеть. Программа проверки — впишите в ПЗУ: 0 → 29 (A ← 9), 1 → 37 (A ← A + 7, получится 0), 2 → 50 (вывести A), 3 → 3A (A ← A + 10), 4 → 62 (вывести A и A ← 2), 5 → C3 (вывести A и перейти на 3). Проверка сверяет программу, жмёт RST, потом 24 раза CLK и смотрит выход после каждого, потом RST посреди работы. Питание 5 В — на верхних шинах.",
+    hints: [
+      "Разберите одну команду: откуда берётся адрес, куда идёт слово из ПЗУ, что из него решает, что сделать. Какая открытая микросхема сама идёт по адресам подряд, но умеет и загрузить новый адрес?",
+      "Регистрам нужны: что записать, разрешение записи и такт. Разрешения у регистров и загрузка счётчика — активным нулём, а биты команды — единицей. И что выбирает между «N» и «A + N»?",
+    ],
+    kit: [
+      chip("cnt161"),
+      { part: "other", type: "chip", tool: `chip:${PROM_ID}`, preset: {}, match: { def: PROM_ID }, label: "ПЗУ 74S288", count: 1 },
+      chip("reg173", 2),
+      chip("add4"),
+      chip("mux4q"),
+      chip("not", 4),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 4 },
+      { part: "resistor", ohms: 1000, count: 4 },
+    ],
+    start: () => cpuBench("proj-cpu"),
+    check(scene) {
+      const rom = scene.components.find((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === PROM_ID);
+      const words = CPU_PROGRAM.map((_, a) => promWord(rom?.data, a));
+      const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+      const progOk = !!rom && CPU_PROGRAM.every((w, a) => words[a] === w);
+      if (!progOk) return [{ text: rom ? `В ПЗУ — программа из описания: сейчас ${words.map((w, a) => `${a} → ${hex(w)}`).join(", ")}` : "На столе ПЗУ 74S288", ok: false }];
+      const { afterReset, outs, again, hurt } = cpuRun(scene);
+      const want = cpuEmulate(CPU_PROGRAM, CPU_CLOCKS);
+      const bad = outs.findIndex((o, i) => o !== want[i]);
+      const wantAgain = cpuEmulate(CPU_PROGRAM, again.length);
+      const badAgain = again.findIndex((o, i) => o !== wantAgain[i]);
+      return [
+        { text: "В ПЗУ — программа из описания", ok: true },
+        { text: `После RST на выходе 0 — сейчас ${afterReset}`, ok: afterReset === 0 },
+        { text: `Такт за тактом на выходе: ${outs.join(" ")}${bad >= 0 ? ` (на ${bad + 1}-м такте нужно ${want[bad]})` : ""}`, ok: bad < 0 },
+        { text: `RST посреди работы — и снова с начала: ${again.join(" ")}${badAgain >= 0 ? ` (нужно ${wantAgain.join(" ")})` : ""}`, ok: badAgain < 0 },
+        noHurt([...hurt]),
       ];
     },
   },

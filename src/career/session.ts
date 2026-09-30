@@ -9,6 +9,7 @@ import { chipTool } from "../parts/chip";
 import { chipFunc, chipLevel, kitUsed, type Metrics } from "./build";
 import { FUNC_NAMES, LEVELS, SMD_TWIN, kitLabel, levelById, smdKitLabel, type KitItem, type Level } from "./levels";
 import { caseOf } from "../chips/package";
+import { PROM_ID, RAM_ID } from "../chips/memory";
 import type { Lesson } from "./lessons";
 import { stageById } from "./repairs";
 
@@ -126,11 +127,20 @@ export const slotOf = (scene: Scene): string | undefined => (scene.career?.works
 
 /** Чего не хватает, чтобы взяться за уровень: функции микросхем набора, которые ещё не открыты. */
 export function missing(level: Level | Lesson): string[] {
-  return level.kit
+  const chips = level.kit
     .filter((k): k is Extract<KitItem, { part: "chip" }> => k.part === "chip")
     .filter((k) => !careerDefs().some((d) => chipFunc(d.id) === k.func))
     .map((k) => FUNC_NAMES[k.func]);
+  // Память (ПЗУ, ОЗУ) в набор идёт заводской — открывают её свои уровни
+  const memory = level.kit.flatMap((k) => (k.part === "other" && k.type === "chip" && k.tool === `chip:${MEMORY_OPENER[0][0]}` && !isDone(MEMORY_OPENER[0][1]) ? ["ПЗУ 74S288"] : k.part === "other" && k.type === "chip" && k.tool === `chip:${MEMORY_OPENER[1][0]}` && !isDone(MEMORY_OPENER[1][1]) ? ["ОЗУ 74LS219"] : []));
+  return [...chips, ...memory];
 }
+
+/** Какой уровень открывает заводскую память: ПЗУ — «ПЗУ на диодах», ОЗУ — «ОЗУ 4 × 4». */
+export const MEMORY_OPENER: [string, string][] = [
+  [PROM_ID, "rom8"],
+  [RAM_ID, "ram4"],
+];
 
 // ─── Текущий уровень ─────────────────────────────────────────────────────────
 
@@ -176,7 +186,11 @@ function baseTool(k: KitItem, smd = false): { tool: ToolDef; preset: Record<stri
   if (k.part === "mosfet") return [{ tool: find("fet"), preset: { kind: k.kind } }];
   if (k.part === "bjt") return [{ tool: find("bjt"), preset: { kind: k.kind } }];
   if (k.part === "resistor") return [{ tool: find("tht"), preset: { ohms: k.ohms, watts: 0.25 } }];
-  if (k.part === "other") return [{ tool: find(k.tool), preset: k.preset }];
+  if (k.part === "other") {
+    // Микросхема памяти ещё не открыта — кнопки нет (проект тогда и не откроется)
+    const tool = find(k.tool);
+    return tool ? [{ tool, preset: k.preset }] : [];
+  }
   return careerDefs()
     .filter((d) => chipFunc(d.id) === k.func)
     .map((d) => ({ tool: chipTool(d) as ToolDef, preset: smd ? { smd: true } : {} }));
