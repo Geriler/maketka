@@ -99,14 +99,14 @@ describe("ОЗУ HM62256B (32K × 8)", () => {
 });
 
 describe("EEPROM AT28C256 (32K × 8)", () => {
-  it("корпус DIP-28 на 600 мил; чтение прошивки; пустая ячейка — FF", () => {
+  it("корпус DIP-28 на 600 мил; чтение прошивки; пустая ячейка — 00", () => {
     const d = eepromDef();
     expect(d.package).toBe("DIPW");
     const data: number[] = [];
     data[0] = 0x12;
     data[0x7fff] = 0x34;
     const b = bench(d, data);
-    expect([read(b, 0), read(b, 0x7fff), read(b, 1)]).toEqual([0x12, 0x34, 0xff]);
+    expect([read(b, 0), read(b, 0x7fff), read(b, 1)]).toEqual([0x12, 0x34, 0x00]);
     expect(Math.max(...b.set(false, true, true, 0))).toBeLessThan(0.05);
   });
   it("запись байта импульсом W̅E̅: 10 мс идёт цикл — чтение даёт опрос (I/O7 — обратный бит), потом новые данные; в проекте сохраняется", () => {
@@ -119,13 +119,13 @@ describe("EEPROM AT28C256 (32K × 8)", () => {
     // Записали 0x2A (бит 7 — 0): при опросе бит 7 — 1, это не пустая ячейка и не сами данные
     expect(during & 0x80).toBe(0x80);
     expect(during & 0x3f).toBe(0x2a & 0x3f);
-    expect([0xff, 0x2a]).not.toContain(during);
+    expect([0x00, 0x2a]).not.toContain(during);
     // Во время цикла новая запись не принимается
     b.set(false, true, false, 0x101, 0x55);
     b.set(false, true, true, 0x101, 0x55);
     for (let i = 0; i < 12; i++) b.set(false, true, true, 0, undefined, 0.001);
     expect(read(b, 0x100)).toBe(0x2a);
-    expect(read(b, 0x101)).toBe(0xff);
+    expect(read(b, 0x101)).toBe(0x00);
     expect(b.chip.data?.[0x100]).toBe(0x2a);
   });
   it("запись запрещена: при O̅E̅ = 0, в первые 5 мс после включения и ниже 3,8 В питания", () => {
@@ -134,19 +134,19 @@ describe("EEPROM AT28C256 (32K × 8)", () => {
     b.set(false, true, false, 1, 0x11, 0.0005);
     b.set(false, true, true, 1, 0x11, 0.0005);
     b.set(false, true, true, 1, undefined, 0.012);
-    expect(read(b, 1)).toBe(0xff);
+    expect(read(b, 1)).toBe(0x00);
     // O̅E̅ = 0 во время импульса
     b.set(false, false, false, 2, 0x22);
     b.set(false, true, true, 2, 0x22);
     b.set(false, true, true, 2, undefined, 0.012);
-    expect(read(b, 2)).toBe(0xff);
+    expect(read(b, 2)).toBe(0x00);
     // Питание 3,5 В — ниже порога 3,8 В
     b.volts(3.5);
     b.set(false, true, false, 3, 0x33, 0.01);
     b.set(false, true, true, 3, 0x33);
     b.volts(5);
     b.set(false, true, true, 3, undefined, 0.012);
-    expect(read(b, 3)).toBe(0xff);
+    expect(read(b, 3)).toBe(0x00);
   });
   it("без питания помнит: выключили и включили — байт на месте", () => {
     const b = bench(eepromDef());

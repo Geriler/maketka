@@ -208,8 +208,11 @@ export const EEPROM_TWC = 0.01;
 export const EEPROM_VSENSE = 3.8;
 /** После того как питание достигло 3,8 В, запись запрещена ещё столько, с (power-on delay, типичное). */
 export const EEPROM_POWER_ON = 0.005;
-/** Стёртая ячейка — все единицы; такая здесь пустая EEPROM (что в ней с завода, даташит не говорит). */
-export const EEPROM_BLANK = 0xff;
+/**
+ * Пустая ячейка — 00, как у ПЗУ 74S288: что в EEPROM с завода, даташит не говорит, а 00 у многих
+ * процессоров (и у здешних) — команда «ничего не делать», так что пустая память ничего не натворит.
+ */
+export const EEPROM_BLANK = 0;
 export const eepromWord = (data: number[] | undefined, addr: number) => (data?.[addr] ?? EEPROM_BLANK) & 255;
 
 /**
