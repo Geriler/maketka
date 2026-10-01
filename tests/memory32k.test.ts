@@ -18,7 +18,7 @@ const IO = [11, 12, 13, 15, 16, 17, 18, 19];
  * 10 кОм к единице или нулю (drive), или через 100 кОм к общему (drive = undefined): так видно,
  * гонит ли микросхема свои выводы.
  */
-function bench(d: ChipDef, data?: number[]) {
+function bench(d: ChipDef, data?: number[], ramZero = false) {
   const f = { mode: "free" as const, x: 0, z: 0, rot: 0 };
   const scene = {
     components: [
@@ -30,7 +30,7 @@ function bench(d: ChipDef, data?: number[]) {
     boards: [],
     chips: { [d.id]: d },
   };
-  const sim = new Simulation(scene as never);
+  const sim = new Simulation(scene as never, undefined, { ramZero });
   const u = scene.components[1];
   const plus = { comp: "G1", pin: 1 }, minus = { comp: "G1", pin: 0 };
   const P = (p: number) => ({ comp: "U", pin: p - 1 });
@@ -95,6 +95,15 @@ describe("ОЗУ HM62256B (32K × 8)", () => {
     b.power(true);
     // После включения — что попало; записанное не обязано сохраниться (и в модели не сохраняется)
     expect(b.sim.memory.get("U:ram")).toBeDefined();
+  });
+});
+
+describe("настройка «ОЗУ при включении: нули»", () => {
+  it("с ней после включения все ячейки 00, без неё — что попало", () => {
+    const z = bench(sramDef(), undefined, true);
+    expect(Array.from({ length: 16 }, (_, a) => read(z, a * 2048)).every((w) => w === 0)).toBe(true);
+    const g = bench(sramDef());
+    expect(Array.from({ length: 16 }, (_, a) => read(g, a * 2048)).some((w) => w !== 0)).toBe(true);
   });
 });
 

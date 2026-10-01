@@ -188,6 +188,16 @@ async function start(): Promise<void> {
   currentBtn.addEventListener("click", () => {
     app.setShowCurrent(!app.showCurrent);
     showCurrentState();
+  const ramBtn = $("btn-ramzero");
+  const ramState = () => {
+    ramBtn.setAttribute("aria-pressed", String(app.ramZero));
+    ramBtn.textContent = app.ramZero ? "ОЗУ при включении: нули" : "ОЗУ при включении: как в жизни";
+  };
+  ramBtn.addEventListener("click", () => {
+    app.setRamZero(!app.ramZero);
+    ramState();
+  });
+  ramState();
   });
   showCurrentState();
 

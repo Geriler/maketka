@@ -424,7 +424,7 @@ function memData(c: Chip, model: ChipModel, sim: Simulation): number[] | undefin
     const n = ((sim.memory.get(`${c.id}:ramOn`) as number | undefined) ?? 0) + 1;
     sim.memory.set(`${c.id}:ramOn`, n);
     const seed = [...c.id].reduce((h, ch) => (h * 31 + ch.charCodeAt(0)) >>> 0, 7) ^ (n * 7919);
-    d = ramGarbage(model.ram.words, model.outputs.length, seed);
+    d = sim.ramZero ? Array(model.ram.words).fill(0) : ramGarbage(model.ram.words, model.outputs.length, seed);
     sim.memory.set(key, d);
   }
   return d;

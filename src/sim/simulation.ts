@@ -108,6 +108,11 @@ export class Simulation {
   solution: Solution = { nodeOf: new Map(), voltage: new Map(), branches: new Map() };
   /** Время расчёта, с: растёт с каждым шагом (замедленное, если расчёт не успевает). */
   time = 0;
+  /**
+   * ОЗУ после включения — нули, а не что попало (настройка стола, для удобства). Проверки
+   * уровней и проектов считают без неё: у настоящей статической памяти в ячейках мусор.
+   */
+  ramZero = false;
   /** Детали, которые сейчас держат нажатыми (кнопки): не часть схемы, в проект не сохраняется. */
   readonly held = new Set<string>();
   /** Своя память деталей между шагами (запись осциллографа): ключ — обозначение детали. */
@@ -127,8 +132,9 @@ export class Simulation {
     public scene: Scene,
     /** Режим «реальные допуски». После изменения вызвать solve(). */
     public tolerance: Tolerance = NO_TOLERANCE,
-    options: { expand?: Iterable<string>; strictModels?: boolean } = {},
+    options: { expand?: Iterable<string>; strictModels?: boolean; ramZero?: boolean } = {},
   ) {
+    this.ramZero = !!options.ramZero;
     this.expandChips = new Set(options.expand ?? []);
     this.strictModels = !!options.strictModels;
     this.solve();

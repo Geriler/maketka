@@ -88,6 +88,7 @@ const MODE_KEY = "maketka.mode.v1";
 type Mode = "sandbox" | "career";
 const TOLERANCE_KEY = "maketka.tolerance.v1";
 const CURRENT_KEY = "maketka.showCurrent.v1";
+const RAM_ZERO_KEY = "maketka.ramZero.v1";
 /** Путь внутрь открытых микросхем (чтобы вернуться и после перезагрузки). */
 const CHIP_STACK_KEY = "maketka.chipstack.v1";
 /** Сколько шагов можно отменить. */
@@ -206,7 +207,12 @@ export class App {
     });
     this.adoptBoards();
     this.world.rebuildBoards(true);
-    this.sim = new Simulation(this.scene, App.loadTolerance());
+    try {
+      this.ramZero = localStorage.getItem(RAM_ZERO_KEY) === "on";
+    } catch {
+      /* по умолчанию — как в жизни */
+    }
+    this.sim = new Simulation(this.scene, App.loadTolerance(), { ramZero: this.ramZero });
     try {
       this.showCurrent = localStorage.getItem(CURRENT_KEY) !== "off";
     } catch {
@@ -365,6 +371,19 @@ export class App {
   /** Показывать бегущие точки тока (расчёт и показания в панелях не зависят от этого). */
   showCurrent = true;
 
+  /** ОЗУ после включения: нули (true) или что попало, как у настоящей (false, по умолчанию). */
+  ramZero = false;
+
+  setRamZero(on: boolean): void {
+    this.ramZero = on;
+    this.sim.ramZero = on;
+    try {
+      localStorage.setItem(RAM_ZERO_KEY, on ? "on" : "off");
+    } catch {
+      /* хранилище недоступно */
+    }
+  }
+
   setShowCurrent(on: boolean): void {
     this.showCurrent = on;
     try {
@@ -520,7 +539,7 @@ export class App {
     this.scene = s;
     this.adoptBoards();
     this.world.rebuildBoards(true);
-    this.sim = new Simulation(s, this.sim.tolerance);
+    this.sim = new Simulation(s, this.sim.tolerance, { ramZero: this.ramZero });
     this.selected = undefined;
     this.picked = undefined;
     this.selectedHole = undefined;
