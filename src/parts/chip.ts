@@ -1,5 +1,5 @@
 import * as THREE from "three";
-import { HOLE_BY_ID, holeLabel, isSot, packageName, pinLayoutText, pinOffsets } from "../model/breadboard";
+import { HOLE_BY_ID, MODULE_ROWS, holeLabel, isModule, isSot, packageName, pinLayoutText, pinOffsets } from "../model/breadboard";
 import type { Chip, ChipDef } from "../model/types";
 import { countChip, countChips, countDetails, countShort } from "../chips/count";
 import { resolveChip, toolChips } from "../chips/registry";
@@ -22,7 +22,7 @@ export function chipPinName(def: ChipDef, i: number): string {
 
 /** Инструмент установки микросхемы из библиотеки. */
 export function chipTool(def: ChipDef) {
-  const soic = !isSot(def.package) && [4, 6, 8, 14, 16, 18, 20, 24, 28].includes(def.pins);
+  const soic = !isSot(def.package) && !isModule(def.package) && [4, 6, 8, 14, 16, 18, 20, 24, 28].includes(def.pins);
   // SMD-исполнение: SO-n (SOIC) или своё, если у микросхемы оно другое (SOP-28 на 450 мил у HM62256B)
   const smdFp = smdFootprintOf(def.id) ?? `SO-${def.pins}`;
   const smdName = smdFp === "SOP-28" ? "SOP-28 (SMD, 450 мил)" : `SO-${def.pins} (SMD, SOIC)`;
@@ -41,14 +41,16 @@ export function chipTool(def: ChipDef) {
       (about ? `<p>${about}</p>` : "") +
       (s.smd && soic
         ? `<p class="sub">${smdName}, шаг 1,27 мм — та же микросхема без ножек, выводы нумеруются как у DIP: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Ставится только на плату под SMD — под ней появятся площадки.</p>`
-        : `<p class="sub">${packageName(def.package, def.pins)}${isSot(def.package) ? " на переходнике" : ""}: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Встаёт поперёк центральной канавки макетки${def.package === "DIPW" ? " (ряды f и b: между рядами выводов 15,24 мм)" : ""}: ${pinLayoutText(def.package, def.pins)}. На плате под SMD ${isSot(def.package) ? "встаёт без переходника, на свои площадки" : "делает себе отверстия где угодно"}.</p>`),
+        : isModule(def.package)
+          ? `<p class="sub">Модуль — своя плата с деталями на штыревом разъёме, стоит на нём вертикально: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Выводы — в один ряд через 2,54 мм: в макетке — вдоль ряда (каждый вывод в своём столбце), на плате под SMD — в свои отверстия.</p>`
+          : `<p class="sub">${packageName(def.package, def.pins)}${isSot(def.package) ? " на переходнике" : ""}: ${def.pinNames.map((_, i) => `${i + 1} ${chipPinName(def, i)}`).join(", ")}. Встаёт поперёк центральной канавки макетки${def.package === "DIPW" ? " (ряды f и b: между рядами выводов 15,24 мм)" : ""}: ${pinLayoutText(def.package, def.pins)}. На плате под SMD ${isSot(def.package) ? "встаёт без переходника, на свои площадки" : "делает себе отверстия где угодно"}.</p>`),
     // У DIP есть исполнение в SOIC — выбор корпуса
     editor: (s) => (soic ? selectField("chipBody", "Корпус", [["dip", `${packageName(def.package, def.pins)} (выводной)`], ["soic", smdName]], s.smd ? "soic" : "dip") : ""),
     set(s, field, value) {
       if (field === "chipBody") s.smd = value === "soic";
     },
     create: (s) => ({ type: "chip", def: def.id, name: def.name, package: def.package, pins: def.pins, ...(s.smd && soic ? { smd: true } : {}) }),
-    hint: () => `Нажмите на отверстие ряда f у канавки — туда встанет вывод 1: ${pinLayoutText(def.package, def.pins)}, дальний ряд — в ряду ${def.package === "DIPW" ? "b (корпус на 600 мил перекрывает канавку и ещё три ряда)" : "e"}. R — повернуть (до установки или выделенную): на печатной плате и корпусе — в любую сторону.`,
+    hint: () => isModule(def.package) ? `Нажмите на отверстие — туда встанет вывод 1, остальные ${def.pins - 1} — вправо по ряду. R — повернуть.` : `Нажмите на отверстие ряда f у канавки — туда встанет вывод 1: ${pinLayoutText(def.package, def.pins)}, дальний ряд — в ряду ${def.package === "DIPW" ? "b (корпус на 600 мил перекрывает канавку и ещё три ряда)" : "e"}. R — повернуть (до установки или выделенную): на печатной плате и корпусе — в любую сторону.`,
   });
 }
 
@@ -507,12 +509,13 @@ function chipView(c: Chip): ComponentView {
     const offsets = pinOffsets(c.package, c.pins);
     const len = Math.max(...offsets.map(([a]) => a)) + 1;
     const half = c.package === "DIPW" ? 3 : 1.5;
-    base = offsets.map(([along, across]) => new THREE.Vector3(along - (len - 1) / 2, mm(0.3), across === 0 ? half : -half));
+    base = offsets.map(([along, across]) => new THREE.Vector3(along - (len - 1) / 2, mm(0.3), isModule(c.package) ? 0 : across === 0 ? half : -half));
     pins = base.map((p) => freeTransform(c, p));
     group.position.set(c.placement.x, 0, c.placement.z);
     group.rotation.y = c.placement.rot;
   }
   if (isSot(c.package)) return sotView(c, group, base, pins);
+  if (isModule(c.package)) return moduleView(c, group, base, pins);
   const Hs = base[0].y; // поверхность платы (или стола)
   const center = base.reduce((a, p) => a.add(p), new THREE.Vector3()).multiplyScalar(1 / base.length);
   const u = base[k - 1].clone().sub(base[0]).setY(0).normalize(); // вдоль ряда выводов 1…k
@@ -542,6 +545,77 @@ function chipView(c: Chip): ComponentView {
     group,
     pins,
     hotspot: c.placement.mode === "board" ? center.clone().setY(y + T) : freeTransform(c, new THREE.Vector3(0, y + T, 0)),
+    update() {},
+    dispose: () => disposeGroup(group),
+  };
+}
+
+// ─── 3D: модуль на штыревом разъёме ─────────────────────────────────────────────
+
+/** Плата модуля: зелёная, название, «SIP-n», номера выводов у разъёма. */
+function moduleTexture(name: string, n: number, w: number, h: number): THREE.CanvasTexture {
+  const P = 48;
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.round(w * P);
+  canvas.height = Math.round(h * P);
+  const g = canvas.getContext("2d")!;
+  g.fillStyle = "#2a8a4c";
+  g.fillRect(0, 0, canvas.width, canvas.height);
+  // Дорожки от выводов разъёма вверх
+  g.strokeStyle = "#3fa865";
+  g.lineWidth = P * 0.18;
+  for (let i = 0; i < n; i++) {
+    const x = (i + (w - n) / 2 + 0.5) * P;
+    g.beginPath();
+    g.moveTo(x, canvas.height);
+    g.lineTo(x, canvas.height - P * (1.6 + (i % 3) * 0.7));
+    g.stroke();
+  }
+  g.fillStyle = "#f2f4f0";
+  g.textAlign = "center";
+  g.textBaseline = "middle";
+  g.font = `600 ${P * 0.55}px "IBM Plex Mono", ui-monospace, monospace`;
+  for (let i = 0; i < n; i++) if (i === 0 || i === n - 1 || (i + 1) % 5 === 0) g.fillText(String(i + 1), (i + (w - n) / 2 + 0.5) * P, canvas.height - P * 0.55);
+  g.font = `700 ${Math.min(P * 1.4, (canvas.width / Math.max(6, name.length)) * 1.4)}px "IBM Plex Mono", ui-monospace, monospace`;
+  g.fillText(name, canvas.width / 2, canvas.height * 0.42);
+  g.font = `600 ${P * 0.7}px "IBM Plex Mono", ui-monospace, monospace`;
+  g.fillText(`модуль SIP-${n}`, canvas.width / 2, canvas.height * 0.42 + P * 1.3);
+  const tex = new THREE.CanvasTexture(canvas);
+  tex.colorSpace = THREE.SRGBColorSpace;
+  tex.anisotropy = 8;
+  return tex;
+}
+
+/**
+ * Модуль: штыревой разъём (чёрная планка, штыри в отверстиях) и над ним — плата модуля стоймя,
+ * в плоскости ряда выводов. Высота платы — как у её поля под детали.
+ */
+function moduleView(c: Chip, group: THREE.Group, base: THREE.Vector3[], pins: THREE.Vector3[]): ComponentView {
+  const n = base.length;
+  const Hs = base[0].y;
+  const center = base.reduce((a, p) => a.add(p), new THREE.Vector3()).multiplyScalar(1 / n);
+  const u = n > 1 ? base[n - 1].clone().sub(base[0]).setY(0).normalize() : new THREE.Vector3(1, 0, 0);
+  const v = new THREE.Vector3().crossVectors(u, new THREE.Vector3(0, 1, 0));
+  const basis = new THREE.Matrix4().makeBasis(u, new THREE.Vector3(0, 1, 0), v);
+  const strip = mm(2.5);
+  const header = new THREE.Mesh(new THREE.BoxGeometry(n, strip, strip), blackPlastic);
+  header.position.copy(center).setY(Hs + mm(1) + strip / 2);
+  header.quaternion.setFromRotationMatrix(basis);
+  group.add(header);
+  for (const p of base) group.add(lead([p.clone().setY(Hs - 0.2), p.clone().setY(Hs + mm(1) + strip + mm(1.5))], mm(0.32)));
+  const w = n + 2, h = MODULE_ROWS + 3, t = mm(1.6);
+  const face = new THREE.MeshStandardMaterial({ map: moduleTexture(c.name, n, w, h), roughness: 0.6, emissive: 0x0b2414 });
+  const edge = new THREE.MeshStandardMaterial({ color: 0x1a4d2c, roughness: 0.7 });
+  const board = new THREE.Mesh(new THREE.BoxGeometry(w, h, t), [edge, edge, edge, edge, face, face]);
+  const y = Hs + mm(1) + strip + h / 2;
+  board.position.copy(center).setY(y);
+  board.quaternion.setFromRotationMatrix(basis);
+  group.add(board);
+  tagPickable(group, c.id);
+  return {
+    group,
+    pins,
+    hotspot: c.placement.mode === "board" ? center.clone().setY(y + h / 2) : freeTransform(c, new THREE.Vector3(0, y + h / 2, 0)),
     update() {},
     dispose: () => disposeGroup(group),
   };

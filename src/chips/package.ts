@@ -5,7 +5,7 @@
  * и считается одинаково в любом месте.
  */
 
-import { HOLE_BY_ID, chipPinHole, packageName, type BoardSpec } from "../model/breadboard";
+import { HOLE_BY_ID, chipPinHole, isModule, packageName, type BoardSpec } from "../model/breadboard";
 import type { ChipDef, Component, Scene } from "../model/types";
 import { part } from "../parts";
 import { buildNetlist } from "../view/schematic";
@@ -85,9 +85,10 @@ export function packageProblems(scene: Scene): string[] {
     const why = part(c).notInChip?.(c);
     if (why) out.push(`${c.id} не может быть внутри: ${why}.`);
   }
+  // У модуля места столько, сколько площади на его плате: детали и так не встанут за её край
   const space = spaceUsed(scene);
   const room = box.room ?? spaceOf(box.pins ?? 0);
-  if (space > room) {
+  if (!isModule(box.package) && space > room) {
     out.push(`Не помещается в ${packageName(box.package, box.pins ?? 0)}: начинка занимает ${space} клеток из ${room}. Уберите детали или возьмите корпус больше.`);
   }
   return out;

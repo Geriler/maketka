@@ -110,13 +110,13 @@ export interface Seat {
  */
 export type SmdFootprint = "SOT-23" | "SOT-23-5" | "SOT-23-6" | "SOT-143" | "SO-4" | "SO-6" | "SO-8" | "SO-14" | "SO-16" | "SO-18" | "SO-20" | "SO-24" | "SO-28" | "SOP-28" | "1206" | "0805" | "0603" | "0402";
 /** DIP-n — выводы в два ряда через 7,62 мм (300 мил); DIPW-n — через 15,24 мм (600 мил), как у больших памяти. */
-export type Footprint = SmdFootprint | `DIP-${number}` | `DIPW-${number}` | "TH3" | `TH2-${number}` | "DISP-10" | "NODE" | "VIA";
+export type Footprint = SmdFootprint | `DIP-${number}` | `DIPW-${number}` | `SIP-${number}` | "TH3" | `TH2-${number}` | "DISP-10" | "NODE" | "VIA";
 
 /** Место без детали — точка меди: узел дорожки или переход. */
 export const isCopperPoint = (fp: Footprint): boolean => fp === "NODE" || fp === "VIA";
 
 /** Выводное посадочное место (отверстия), а не SMD. */
-export const isThtFootprint = (fp: Footprint): boolean => fp.startsWith("DIP") || fp.startsWith("TH") || fp === "DISP-10";
+export const isThtFootprint = (fp: Footprint): boolean => fp.startsWith("DIP") || fp.startsWith("SIP") || fp.startsWith("TH") || fp === "DISP-10";
 
 /** Площадка в мм в своей системе координат: вывод 1 — слева в ближнем ряду (+z к себе). */
 interface PadMm {
@@ -165,6 +165,11 @@ export function footprintPads(fp: Footprint): PadMm[] {
   if (fp.startsWith("TH2-")) {
     const k = Number(fp.slice(4));
     return [th(-k / 2, 0), th(k / 2, 0)];
+  }
+  // Модуль: штыревой разъём в один ряд
+  if (fp.startsWith("SIP-")) {
+    const n = Number(fp.slice(4));
+    return pinOffsets("SIP", n).map(([along]) => th(along - (n - 1) / 2, 0));
   }
   if (fp.startsWith("DIP")) {
     const wide = fp.startsWith("DIPW-");
@@ -284,25 +289,35 @@ export type ChipPinRole = "nc" | "in" | "out" | "io" | "vcc" | "gnd";
 
 /**
  * Вид корпуса: DIP (выводы в два ряда через 300 мил), DIPW — то же через 600 мил (большая
- * память, AT28C256), или SOT-23-5/6, SOT-143 — крошечные, на переходнике с шагом 2,54 мм.
+ * память, AT28C256), SOT-23-5/6, SOT-143 — крошечные, на переходнике с шагом 2,54 мм, или SIP —
+ * модуль: своя плата с деталями и однорядным штыревым разъёмом (шаг 2,54 мм), стоит на нём
+ * вертикально. Начинка модуля ограничена не местом в корпусе, а площадью его платы.
  */
-export type ChipPackage = "DIP" | "DIPW" | "SOT-23-5" | "SOT-23-6" | "SOT-143";
+export type ChipPackage = "DIP" | "DIPW" | "SOT-23-5" | "SOT-23-6" | "SOT-143" | "SIP";
+
+/** Модуль (плата на штыревом разъёме), а не микросхема. */
+export const isModule = (pkg: ChipPackage | undefined): pkg is "SIP" => pkg === "SIP";
+/** Глубина платы модуля (от разъёма), шагов: ряды поля под детали. */
+export const MODULE_ROWS = 14;
+/** Сколько выводов бывает у модуля. */
+export const MODULE_PINS = [8, 12, 16, 20, 24, 32, 40];
 
 /** Крошечный корпус на переходнике. */
 export const isSot = (pkg: ChipPackage | undefined): pkg is "SOT-23-5" | "SOT-23-6" | "SOT-143" => pkg === "SOT-23-5" || pkg === "SOT-23-6" || pkg === "SOT-143";
 
 /** Корпуса, которые можно выбрать: «DIP-4» … «DIP-20», «SOT-23-5», «SOT-23-6», «SOT-143». */
-export const PACKAGES = ["DIP-4", "DIP-6", "DIP-8", "DIP-14", "DIP-16", "DIP-18", "DIP-20", "SOT-23-5", "SOT-23-6", "SOT-143"];
+export const PACKAGES = ["DIP-4", "DIP-6", "DIP-8", "DIP-14", "DIP-16", "DIP-18", "DIP-20", "SOT-23-5", "SOT-23-6", "SOT-143", ...MODULE_PINS.map((n) => `SIP-${n}`)];
 
 /** Название корпуса: «DIP-8», «SOT-23-5». */
 export function packageName(pkg: ChipPackage | undefined, pins: number): string {
-  return isSot(pkg) ? pkg : pkg === "DIPW" ? `DIP-${pins} (600 мил)` : `DIP-${pins}`;
+  return isSot(pkg) ? pkg : pkg === "SIP" ? `модуль SIP-${pins}` : pkg === "DIPW" ? `DIP-${pins} (600 мил)` : `DIP-${pins}`;
 }
 
 /** Из названия — вид и число выводов. */
 export function parsePackage(name: string): { package: ChipPackage; pins: number } {
   if (name === "SOT-23-5" || name === "SOT-23-6") return { package: name, pins: name === "SOT-23-5" ? 5 : 6 };
   if (name === "SOT-143") return { package: name, pins: 4 };
+  if (name.startsWith("SIP")) return { package: "SIP", pins: Number(name.replace(/\D/g, "")) || 20 };
   return { package: "DIP", pins: Number(name.replace(/\D/g, "")) || 8 };
 }
 
@@ -316,6 +331,7 @@ export function parsePackage(name: string): { package: ChipPackage; pins: number
 export function pinOffsets(pkg: ChipPackage | undefined, pins: number): [number, number][] {
   if (pkg === "SOT-23-5") return [[0, 0], [1, 0], [2, 0], [2, 3], [0, 3]];
   if (pkg === "SOT-143") return [[0, 0], [2, 0], [2, 3], [0, 3]];
+  if (pkg === "SIP") return Array.from({ length: pins }, (_, i): [number, number] => [i, 0]);
   const k = pins / 2;
   const across = pkg === "DIPW" ? 6 : 3;
   return Array.from({ length: pins }, (_, i): [number, number] => (i < k ? [i, 0] : [pins - 1 - i, across]));
@@ -326,6 +342,7 @@ export const DISPLAY_OFFSETS: [number, number][] = Array.from({ length: 10 }, (_
 
 /** Словами, где какие выводы: для подсказок и панелей. */
 export function pinLayoutText(pkg: ChipPackage | undefined, pins: number): string {
+  if (pkg === "SIP") return `выводы 1–${pins} — в один ряд слева направо (штыревой разъём модуля)`;
   if (pkg === "SOT-143") return "выводы 1 и 2 — по ближнему ряду слева направо, 3 — дальний справа, 4 — дальний слева (как у SOT-143; посередине рядов ножек нет)";
   if (pkg === "SOT-23-6") return "выводы 1–3 — по ближнему ряду слева направо, 4–6 — обратно по дальнему (как у SOT-23-6)";
   if (pkg === "SOT-23-5") return "выводы 1–3 — по ближнему ряду слева направо, 4 — дальний справа, 5 — дальний слева (как у SOT-23-5; посередине дальнего ряда ножки нет)";
@@ -334,6 +351,8 @@ export function pinLayoutText(pkg: ChipPackage | undefined, pins: number): strin
 
 /** Поле площадок корпуса: по 4 столбца на место вывода в ряду, 8 рядов. */
 export function chipField(b: Pick<BoardSpec, "package" | "pins">): { cols: number; rows: number } {
+  // Модуль: плата в натуральную величину — по шагу на вывод разъёма и поля по шагу
+  if (isModule(b.package)) return { cols: (b.pins ?? 20) + 2, rows: MODULE_ROWS };
   const along = Math.max(...pinOffsets(b.package, b.pins ?? 8).map(([a]) => a)) + 1;
   return { cols: 4 * along + 1, rows: 8 };
 }
@@ -454,6 +473,7 @@ export function chipPinHole(b: BoardSpec, n: number): string {
 export function chipPinAt(b: BoardSpec, i: number): { x: number; z: number } {
   const [along, across] = pinOffsets(b.package, b.pins ?? 8)[i];
   const { rows } = chipField(b);
+  if (isModule(b.package)) return { x: padX(b, along + 2), z: padZ(b, rows - 1) + 2 };
   return { x: padX(b, 4 * along + 3), z: across === 0 ? padZ(b, rows - 1) + 2 : padZ(b, 0) - 2 };
 }
 

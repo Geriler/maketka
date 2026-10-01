@@ -1,6 +1,6 @@
 /** Панель «Проекты»: несколько схем в браузере и файл .json для обмена. */
 
-import { PACKAGES, chipPinName, packageName, type BoardSpec } from "../model/breadboard";
+import { PACKAGES, chipPinName, isModule, packageName, type BoardSpec } from "../model/breadboard";
 import type { ChipDef, Scene } from "../model/types";
 import { PIN_ROLES } from "../chips/roles";
 import { countChip, countChips, countDetails, countShort, type PartCount } from "../chips/count";
@@ -82,8 +82,8 @@ export class ProjectsPanel {
       : "";
     const problems = box ? info.problems.map((t) => `<p class="sub bad">${esc(t)}</p>`).join("") : "";
     const create = `<div class="field"><label for="f-chip-new">Корпус</label>
-        <select id="f-chip-new">${PACKAGES.map((k) => `<option value="${k}"${k === this.newPkg ? " selected" : ""}>${k}</option>`).join("")}</select></div>
-      <div class="row"><button class="btn inline" data-proj-act="chipNew">Новая микросхема</button></div>`;
+        <select id="f-chip-new">${PACKAGES.map((k) => `<option value="${k}"${k === this.newPkg ? " selected" : ""}>${k.startsWith("SIP") ? `${k} — модуль` : k}</option>`).join("")}</select></div>
+      <div class="row"><button class="btn inline" data-proj-act="chipNew">Новая микросхема или модуль</button></div>`;
     const can = !info.problems.length;
     const lib = info.library
       .map(
@@ -95,7 +95,7 @@ export class ProjectsPanel {
     const packing = box
       ? `<h3>${info.editing ? `Схема микросхемы «${esc(info.editing.name)}»` : `Своя микросхема в ${packageName(box?.package, info.size)}`}</h3>
       ${info.count.total ? `<div class="kv"><span>Внутри</span><span>${countShort(info.count)}</span></div><p class="sub">${esc(countDetails(info.count))}${info.count.chips.size ? `; из своих микросхем: ${esc(countChips(info.count))}` : ""}</p>` : ""}
-      ${pins}<div class="kv"><span>Место в ${packageName(box?.package, info.size)}</span><span>${info.space} из ${box?.room ?? 2 * info.size} клеток</span></div>${problems}
+      ${pins}${isModule(box?.package) ? `<div class="kv"><span>Место</span><span>площадь платы модуля</span></div>` : `<div class="kv"><span>Место в ${packageName(box?.package, info.size)}</span><span>${info.space} из ${box?.room ?? 2 * info.size} клеток</span></div>`}${problems}
       <p class="sub">В микросхему входит то, что стоит на корпусе. Питание и приборы на столе — обвязка для проверки: подключайте их к площадкам выводов. Назначение выводов — в панели корпуса (нажмите на него).</p>
       <div class="field"><label for="f-chip-name">Название</label>
         <input id="f-chip-name" class="btn" type="text" maxlength="24" placeholder="Например, мой NAND" value="${esc(name)}" /></div>

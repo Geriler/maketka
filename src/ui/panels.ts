@@ -3,7 +3,7 @@
  * Только строки HTML по текущему состоянию; события навешивает app.ts.
  */
 
-import { BOARDS, PACKAGES, HOLE_BY_ID, chipPinName, packageName, parsePackage, pinLayoutText, PCB_SIZES, SMD_BOARD_SIZES, boardById, boardName, boardSize, describeNode, holeLabel, type BoardSpec, type ChipPinRole, type Hole } from "../model/breadboard";
+import { BOARDS, PACKAGES, MODULE_ROWS, isModule, HOLE_BY_ID, chipPinName, packageName, parsePackage, pinLayoutText, PCB_SIZES, SMD_BOARD_SIZES, boardById, boardName, boardSize, describeNode, holeLabel, type BoardSpec, type ChipPinRole, type Hole } from "../model/breadboard";
 import { isFlatWire, type Component, type Endpoint, type Scene, type WireShape } from "../model/types";
 import { part, pinLabelOf } from "../parts";
 import { formatOhms, formatSI } from "../sim/resistorCodes";
@@ -281,9 +281,9 @@ function chipSection(b: BoardSpec): string {
       <input class="btn" type="text" maxlength="8" data-field="chipName:${i}" aria-label="Имя вывода ${i + 1}" placeholder="${PIN_ROLES[role].name}" value="${esc(b.names?.[i] ?? "")}" ${role === "nc" ? "disabled" : ""} /></div>`;
   }).join("");
   return `<div class="board-section">
-    <div class="eyebrow">корпус микросхемы</div>
-    <h3>${b.label ? esc(b.label) : "Своя микросхема"}, ${packageName(b.package, n)}</h3>
-    ${b.fixed ? "" : selectField("chipPkg", "Корпус", PACKAGES.map((k): [string, string] => [k, `${k} — ${2 * parsePackage(k).pins} клеток места`]), packageName(b.package, n))}
+    <div class="eyebrow">${isModule(b.package) ? "плата модуля" : "корпус микросхемы"}</div>
+    <h3>${b.label ? esc(b.label) : isModule(b.package) ? "Свой модуль" : "Своя микросхема"}, ${packageName(b.package, n)}</h3>
+    ${b.fixed ? "" : selectField("chipPkg", "Корпус", PACKAGES.map((k): [string, string] => [k, k.startsWith("SIP") ? `${k} — модуль: плата ${Math.round((parsePackage(k).pins + 2) * 2.54)} × ${Math.round((MODULE_ROWS + 3) * 2.54)} мм, место — её площадь` : `${k} — ${2 * parsePackage(k).pins} клеток места`]), isModule(b.package) ? `SIP-${n}` : packageName(b.package, n))}
     ${selectField("chipSmd", "Поле", [["grid", "сетка площадок 2,54 мм — выводные детали"], ["smd", "под SMD — SOT-23, SOIC, 0805"]], b.smd ? "smd" : "grid")}
     ${b.smd ? `<p class="sub">Поле под SMD: деталь ставится куда угодно, под ней появляются её площадки: у SMD — корпуса, у выводной — отверстия. Соединяйте тонкими дорожками (T); щелчок по пустому месту — узел дорожки. Поле меняется, пока на нём пусто.</p>` : ""}
     ${b.fixed ? "" : `<div class="field"><label for="f-chipLabel">Название</label><input id="f-chipLabel" class="btn" type="text" maxlength="24" data-field="chipLabel" placeholder="Например, мой NAND" value="${esc(b.label ?? "")}" /></div>`}

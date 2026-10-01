@@ -2283,6 +2283,7 @@ export class App {
     if (pinsOf(sample) >= 4 && h.hole) {
       const n = pinsOf(sample);
       const holes = this.dipHoles(h.hole, n, this.quarterTurns(), sample.type === "chip" ? sample.package : undefined, part(sample).layout?.(sample));
+      if (!holes && sample.type === "chip" && sample.package === "SIP") return this.setHint(`Здесь не встанет: вывод 1 — в отверстие под курсором, остальным ${n - 1} — место вправо по ряду (не в шинах). R — повернуть.`);
       if (!holes) return this.setHint(`Здесь не встанет: вывод 1 — в отверстие под курсором, всем ${n} выводам нужно место (${n / 2} × 2, ряды через ${sample.type === "chip" && sample.package === "DIPW" ? "6 шагов — корпус на 600 мил" : "3 шага"}), не в шинах. На макетке — поперёк канавки, от ряда f. R — повернуть.`);
       const occ = this.occupied();
       const busy = holes.find((id) => occ.has(id));

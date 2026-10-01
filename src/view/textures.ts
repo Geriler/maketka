@@ -260,14 +260,16 @@ export function chipTexture(b: BoardSpec): THREE.CanvasTexture {
   const g = canvas.getContext("2d")!;
   const X = (x: number) => (x + size.width / 2) * PX;
   const Z = (z: number) => (z + size.depth / 2) * PX;
-  g.fillStyle = "#1c1e21";
+  // Модуль — зелёная плата, микросхема — чёрный корпус
+  const mod = spec.package === "SIP";
+  g.fillStyle = mod ? "#1f6b3a" : "#1c1e21";
   g.fillRect(0, 0, w, h);
   // Поле начинки — светлее, как кристалл
   const fx0 = X(padX(spec, 1)) - PX * 0.7, fx1 = X(padX(spec, f.cols)) + PX * 0.7;
   const fz0 = Z(padZ(spec, 0)) - PX * 0.7, fz1 = Z(padZ(spec, f.rows - 1)) + PX * 0.7;
-  g.fillStyle = "#34383d";
+  g.fillStyle = mod ? "#25804a" : "#34383d";
   g.fillRect(fx0, fz0, fx1 - fx0, fz1 - fz0);
-  g.strokeStyle = "#5b6168";
+  g.strokeStyle = mod ? "#3d9a62" : "#5b6168";
   g.lineWidth = 2;
   g.strokeRect(fx0, fz0, fx1 - fx0, fz1 - fz0);
   g.textAlign = "center";
@@ -294,6 +296,18 @@ export function chipTexture(b: BoardSpec): THREE.CanvasTexture {
       // Номер и имя — между площадкой и полем
       g.fillStyle = role === "nc" ? "#8a8f96" : "#e8e9eb";
       g.font = `700 ${PX * 0.42}px "IBM Plex Mono", ui-monospace, monospace`;
+      // У модуля выводы через шаг: номер — над площадкой, имя — повёрнуто, вдоль поля
+      if (mod) {
+        g.fillText(String(hole.pin), cx, cz - PX * 0.8);
+        g.save();
+        g.translate(cx, cz - PX * 1.3);
+        g.rotate(-Math.PI / 2);
+        g.textAlign = "left";
+        g.font = `600 ${PX * 0.36}px "IBM Plex Mono", ui-monospace, monospace`;
+        g.fillText(chipPinName(spec, i), 0, 0);
+        g.restore();
+        continue;
+      }
       const label = `${hole.pin} ${chipPinName(spec, i)}`;
       g.fillText(label, cx, cz + (near ? -1 : 1) * PX * 0.95);
       continue;
@@ -315,7 +329,7 @@ export function chipTexture(b: BoardSpec): THREE.CanvasTexture {
   g.fillStyle = "#c9ccd1";
   g.font = `600 ${PX * 0.42}px "IBM Plex Mono", ui-monospace, monospace`;
   g.textAlign = "left";
-  g.fillText(`${spec.label || "СВОЯ МИКРОСХЕМА"} · ${packageName(spec.package, n)}${spec.smd ? " · ПОЛЕ ПОД SMD" : ""}`, PX * 0.6, PX * 0.55);
+  g.fillText(`${spec.label || (spec.package === "SIP" ? "СВОЙ МОДУЛЬ" : "СВОЯ МИКРОСХЕМА")} · ${packageName(spec.package, n)}${spec.smd ? " · ПОЛЕ ПОД SMD" : ""}`, PX * 0.6, PX * 0.55);
   const tex = new THREE.CanvasTexture(canvas);
   tex.colorSpace = THREE.SRGBColorSpace;
   tex.anisotropy = 8;

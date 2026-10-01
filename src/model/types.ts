@@ -655,7 +655,7 @@ export function footprintOf(c: Component): Footprint | undefined {
     case "chip":
       if (c.package === "SOT-23-5" || c.package === "SOT-23-6" || c.package === "SOT-143") return c.package;
       if (c.smd) return smdFootprintOf(c.def) ?? (SO_PINS.includes(c.pins) ? (`SO-${c.pins}` as Footprint) : undefined);
-      return c.package === "DIPW" ? `DIPW-${c.pins}` : `DIP-${c.pins}`;
+      return c.package === "SIP" ? `SIP-${c.pins}` : c.package === "DIPW" ? `DIPW-${c.pins}` : `DIP-${c.pins}`;
   }
   return undefined;
 }
