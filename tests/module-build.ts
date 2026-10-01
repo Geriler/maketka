@@ -56,7 +56,7 @@ export function sliceCase(pkg: "SIP" | "DIP" = "SIP"): Scene {
 }
 
 /** Процессор на W модулях-срезах (по 4 бита), def — упакованный срез. */
-export function cpuOfModules(def: ChipDef, W = 2): Scene {
+export function cpuOfModules(def: ChipDef, W = 2, project = "proj-cpu8", mutate: (w: [Endpoint, Endpoint][]) => [Endpoint, Endpoint][] = (w) => w): Scene {
   const plus: Endpoint = { comp: "G1", pin: 1 }, minus: Endpoint = { comp: "G1", pin: 0 };
   const CLK: Endpoint = { hole: CPU_PINS.clk }, RST: Endpoint = { hole: CPU_PINS.rst };
   const romsN = Math.max(1, W / 2);
@@ -84,9 +84,9 @@ export function cpuOfModules(def: ChipDef, W = 2): Scene {
     else w.push([P(`M${s - 1}`, 12), P(id, 11)]);
     for (const [n, e] of Object.entries(outer)) w.push([e, P(id, +n)]);
   }
-  const sc = PROJECTS.find((p) => p.id === "proj-cpu8")!.start();
+  const sc = PROJECTS.find((p) => p.id === project)!.start();
   sc.components.push(...comps);
-  sc.wires.push(...w.map(([a, b], i) => ({ id: `WX${i}`, a, b, color: "" })));
+  sc.wires.push(...mutate(w).map(([a, b], i) => ({ id: `WX${i}`, a, b, color: "" })));
   sc.chips = { ...allChips, [def.id]: def };
   applyBoards(sc.boards!);
   return sc;

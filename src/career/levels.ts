@@ -11,7 +11,7 @@ import type { ChipPackage, ChipPinRole } from "../model/breadboard";
 import type { DiodeKind, MosfetKind, TransistorKind } from "../model/types";
 
 /** Логическая функция компонента. */
-export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173" | "bus245" | "rom8" | "ram4" | "sram1" | "dram1";
+export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173" | "bus245" | "rom8" | "ram4" | "sram1" | "dram1" | "slice4";
 
 /** Деталь набора: сколько штук и что именно (тип и номинал). */
 export type KitItem =
@@ -155,7 +155,7 @@ export function goalMet(g: Goal, m: { width: number; height: number; links: numb
 }
 
 /** Схемы с памятью: выход зависит не только от входов, но и от того, что было раньше. */
-export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017", "reg8z", "cnt1", "cnt161", "reg173", "ram4"];
+export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017", "reg8z", "cnt1", "cnt161", "reg173", "ram4", "slice4"];
 
 /**
  * Сегменты a…g цифр 0…9 — как у 74HC4511 по таблице TI (SCHS279E): шестёрка без верхней черты,
@@ -244,6 +244,16 @@ export function seqNext(func: LogicFunc, q: number, prev: boolean[] | undefined,
   // 74HC173 (CP, MR, E̅1, E̅2, OE̅1, OE̅2, D0…D3): MR = 1 — ноль сразу; по фронту CP при E̅1 = E̅2 = 0
   // берёт D, иначе хранит (Nexperia 74HC173, таблица 3)
   if (func === "reg173") return bits[1] ? 0 : rising(prev, bits, 0) ? (!prev![2] && !prev![3] ? num(prev!.slice(6, 10)) : q) : q;
+  // Срез процессора (CLK, RST, W̅A̅, W̅O̅, SEL, CI, N0…N3): q — A в младших 4 битах, выход — в старших.
+  // RST = 1 — оба в ноль сразу; по фронту CLK (по входам до фронта): при W̅A̅ = 0 в A — N или
+  // A + N + CI (SEL = 1; перенос за 15 теряется), при W̅O̅ = 0 в выход — прежнее A
+  if (func === "slice4") {
+    if (bits[1]) return 0;
+    if (!rising(prev, bits, 0)) return q;
+    const a = q & 15, n = num(prev!.slice(6, 10));
+    const next = prev![4] ? (a + n + +prev![5]) & 15 : n;
+    return (prev![2] ? a : next) | ((prev![3] ? q >> 4 : a) << 4);
+  }
   // 74HC4017 (CP0, CP1̅, MR): MR = 1 — ноль; счёт по фронту CP0 при CP1̅ = 0 и по спаду CP1̅ при
   // CP0 = 1 — то есть по фронту «CP0 и не CP1̅» (таблица Nexperia 74HC4017, TI SCHS200)
   if (func === "cnt4017") {
@@ -271,6 +281,8 @@ export function seqOuts(func: LogicFunc, q: number, bits: boolean[]): boolean[] 
   // 74HC161: QA…QD и перенос RCO = ENT при счёте 15
   if (func === "cnt161") return [...[0, 1, 2, 3].map((k) => !!(q & (1 << k))), q === 15 && bits[4]];
   if (func === "reg173") return [0, 1, 2, 3].map((k) => !!(q & (1 << k)));
+  // Срез: выход O0…O3 и перенос CO — из сумматора, A + N + CI сейчас (от SEL не зависит)
+  if (func === "slice4") return [...[0, 1, 2, 3].map((k) => !!((q >> 4) & (1 << k))), (q & 15) + num(bits.slice(6, 10)) + +bits[5] > 15];
   if (func === "ram4") return [0, 1, 2, 3].map((k) => !!((q >> (4 * num(bits.slice(2, 4)))) & (1 << k)));
   // Джонсон: A…E, затем Ā…Ē
   if (func === "johnson") return [0, 1, 2, 3, 4].map((k) => !!(q & (1 << k))).concat([0, 1, 2, 3, 4].map((k) => !(q & (1 << k))));
@@ -288,6 +300,8 @@ export function seqState(func: LogicFunc, outs: boolean[]): number {
   if (func === "reg8z") return outs.slice(0, 8).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
   if (func === "cnt4017") return Math.max(0, outs.slice(0, 10).indexOf(true));
   if (func === "cnt161") return outs.slice(0, 4).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
+  // Срез: по выходам видно только регистр выхода; A не видно — пусть ноль (до сброса — что попало)
+  if (func === "slice4") return outs.slice(0, 4).reduce((m, b, k) => m | (b ? 1 << k : 0), 0) << 4;
   return ["cnt4", "sreg4", "sreg8", "cnt393", "reg173"].includes(func) ? outs.reduce((m, b, k) => m | (b ? 1 << k : 0), 0) : +!!outs[0];
 }
 
@@ -346,6 +360,7 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
     case "cnt1":
     case "cnt161":
     case "reg173":
+    case "slice4":
     case "ram4":
     case "bcd7":
     case "timer":
@@ -470,6 +485,13 @@ const ic = (id: string, func: LogicFunc, pins: number, row: string, col: number)
   const up = "ABCDEFGH"["ABCDEFGH".indexOf(row) - 3];
   const k = pins / 2;
   return { id, func, holes: Array.from({ length: pins }, (_, i) => (i < k ? `k:${row}${col + i}` : `k:${up}${col + pins - 1 - i}`)) };
+};
+
+/** Микросхема DIP-16 на поле модуля (ряды A…N): выводы 1…8 в ряду row, остальные — тремя рядами выше. */
+const icm = (id: string, func: LogicFunc, row: string, col: number) => {
+  const r = "ABCDEFGHIJKLMN".indexOf(row);
+  const up = "ABCDEFGHIJKLMN"[r - 3];
+  return { id, func, holes: Array.from({ length: 16 }, (_, i) => (i < 8 ? `k:${row}${col + i}` : `k:${up}${col + 15 - i}`)) };
 };
 
 /** Питание и общий всех микросхем сборки: вывод корпуса и выводы деталей — по цепи на каждый. */
@@ -2769,6 +2791,72 @@ export const LEVELS: Level[] = [
     recipe: ROM8_RECIPE,
   },
   {
+    id: "slice",
+    func: "slice4",
+    part: "Срез 4 бит",
+    title: "Срез процессора на модуле",
+    about:
+      "Всё, что в четырёхразрядном процессоре работает с числами, — на одной плате, чтобы ставить её столько раз, сколько нужно разрядов: регистр A, сумматор, выбор «N или A + N» и регистр выхода. Четыре микросхемы в корпус не влезут — это модуль: своя плата под SMD на штыревом разъёме SIP-20, место на ней ограничено её площадью. По фронту CLK, по тому, что было до фронта: при W̅A̅ = 0 в A записывается N (SEL = 0) или A + N + CI (SEL = 1; перенос за 15 теряется), при W̅A̅ = 1 A хранится; при W̅O̅ = 0 регистр выхода берёт прежнее A. RST = 1 — A и выход в ноль сразу. CO — перенос из суммы A + N + CI сейчас, без такта и при любом SEL. Выводы разъёма: 1–4 N0…N3, 5 SEL, 6 CLK, 7 RST, 8 W̅A̅, 9 W̅O̅, 10 GND, 11 CI, 12 CO, 13–16 O0…O3, 17–19 не подключены, 20 VCC. Проверяется последовательностью шагов.",
+    hints: [
+      "Сколько здесь хранится чисел и сколько складывается? У каждой части процессора свои выводы — какие из них уходят на разъём, а какие соединяются только внутри модуля?",
+      "Перенос из сумматора и перенос в него — это то, что свяжет два модуля между собой. Что должно стоять на CI у самого младшего?",
+    ],
+    package: "SIP",
+    roles: [..."iiiiiiiiig".split(""), "i", "o", "o", "o", "o", "o", "n", "n", "n", "v"].map((r) => ({ i: "in", o: "out", g: "gnd", v: "vcc", n: "nc" })[r] as ChipPinRole),
+    names: ["N0", "N1", "N2", "N3", "SEL", "CLK", "RST", "W̅A̅", "W̅O̅", "", "CI", "CO", "O0", "O1", "O2", "O3", "", "", "", ""],
+    io: { inputs: [6, 7, 8, 9, 5, 11, 1, 2, 3, 4], outputs: [13, 14, 15, 16, 12] },
+    // CLK RST W̅A̅ W̅O̅ SEL CI N0…N3
+    sequence: seq(
+      "*0100000000",
+      "0001001010", "1001001010",
+      "0001100110", "1001100110",
+      "0000110111", "1000110111",
+      "0010000000", "1010000000",
+      "0011111111", "1011111111",
+      "0100000000",
+      "0000001111", "1000001111",
+      "0001011000", "1001011000",
+      "0000100001", "1000100001",
+      "0010000000", "1010000000",
+      "0100001111",
+      "0001000010", "1001000010",
+      "0001100000", "1001100000",
+      "0010000000", "1010000000",
+    ),
+    kit: [
+      { part: "chip", func: "mux4q", count: 1 },
+      { part: "chip", func: "add4", count: 1 },
+      { part: "chip", func: "reg173", count: 2 },
+    ],
+    recipe: {
+      // Поле модуля SIP-20: 22 столбца, ряды A…N; разъём — у ряда N
+      parts: [icm("MX", "mux4q", "D", 2), icm("AD", "add4", "D", 13), icm("RA", "reg173", "J", 2), icm("RO", "reg173", "J", 13)],
+      nets: [
+        ...power("P20", "P10", ["MX", "AD", "RA", "RO"].map((id) => ({ id, vcc: 16, gnd: 8 }))),
+        // Мультиплексор всегда включён; регистры: выходы всегда включены, второе разрешение записи — общий
+        ["P10", "MX.15", "RA.1", "RA.2", "RA.10", "RO.1", "RO.2", "RO.10"],
+        ["P5", "MX.1"],
+        ["P6", "RA.7", "RO.7"],
+        ["P7", "RA.15", "RO.15"],
+        ["P8", "RA.9"],
+        ["P9", "RO.9"],
+        ["P11", "AD.7"],
+        ["P12", "AD.9"],
+        // Бит k: N — на B сумматора и I0 мультиплексора; A — на A сумматора и D выхода; сумма — на I1; Y — на D регистра A
+        ...[0, 1, 2, 3].flatMap((k) => {
+          const [i0, i1, y] = [[2, 3, 4], [5, 6, 7], [11, 10, 9], [14, 13, 12]][k];
+          return [
+            [`P${k + 1}`, `AD.${[6, 2, 15, 11][k]}`, `MX.${i0}`],
+            [`RA.${3 + k}`, `AD.${[5, 3, 14, 12][k]}`, `RO.${14 - k}`],
+            [`AD.${[4, 1, 13, 10][k]}`, `MX.${i1}`],
+            [`MX.${y}`, `RA.${14 - k}`],
+            [`RO.${3 + k}`, `P${13 + k}`],
+          ];
+        }),
+      ],
+    },
+  },
+  {
     id: "ram4",
     func: "ram4",
     part: "ОЗУ 4 × 4",
@@ -3101,6 +3189,8 @@ export function kitLabel(k: KitItem): string {
   if (k.part === "mosfet" || k.part === "bjt") return k.kind;
   if (k.part === "resistor") return `резистор ${k.ohms >= 1000 ? `${String(k.ohms / 1000).replace(".", ",")} кОм` : `${k.ohms} Ом`}`;
   if (k.part === "other") return k.label;
+  // Модуль — не микросхема: своя плата на разъёме
+  if (LEVELS.find((l) => l.func === k.func)?.package === "SIP") return `${FUNC_NAMES[k.func].replace(/ \(модуль\)$/, "")} — ваш модуль`;
   return `${FUNC_NAMES[k.func]} — открытая микросхема`;
 }
 
@@ -3153,6 +3243,7 @@ export const FUNC_NAMES: Record<LogicFunc, string> = {
   cnt1: "Разряд синхронного счётчика",
   cnt161: "Синхронный счётчик 4 бит",
   reg173: "Регистр 4 бит с тремя состояниями",
+  slice4: "Срез процессора 4 бит (модуль)",
   bus245: "Двунаправленный буфер шины",
   rom8: "ПЗУ 8 × 4 на диодах",
   ram4: "ОЗУ 4 × 4",

@@ -394,6 +394,22 @@ export function cpu8Emulate(prog: { n: number[]; op: number[] }, clocks: number)
   return outs;
 }
 
+/** Проверка 8-битного (из микросхем или из модулей): программа в двух ПЗУ, потом шаги процессора. */
+function cpu8Check(scene: Scene): LessonStep[] {
+  const roms = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === PROM_ID);
+  const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+  const words = (c: (typeof roms)[number]) => CPU8_PROGRAM.n.map((_, a) => promWord(c.data, a));
+  const is = (c: (typeof roms)[number], want: number[]) => want.every((w, a) => words(c)[a] === w);
+  const nRom = roms.find((c) => is(c, CPU8_PROGRAM.n));
+  const opRom = roms.find((c) => c !== nRom && is(c, CPU8_PROGRAM.op));
+  if (roms.length < 2) return [{ text: "На столе два ПЗУ 74S288: одно — числа, другое — команды", ok: false }];
+  if (!nRom || !opRom) {
+    const show = (c: (typeof roms)[number]) => `${c.id}: ${words(c).map((w, a) => `${a} → ${hex(w)}`).join(", ")}`;
+    return [{ text: `В ПЗУ — программа из описания (${!nRom ? "не нашлось ПЗУ с числами" : "не нашлось ПЗУ с командами"}): сейчас ${roms.map(show).join("; ")}`, ok: false }];
+  }
+  return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => cpu8Emulate(CPU8_PROGRAM, k), hex)];
+}
+
 /** Плата процессора под SMD, двусторонняя, шагов 2,54 мм: площадки для проводов J1…J35 — вдоль ближнего края. */
 export const CPU_BOARD = { cols: 36, rows: 26 };
 
@@ -891,20 +907,29 @@ export const PROJECTS: Lesson[] = [
       { part: "resistor", ohms: 1000, count: 8 },
     ],
     start: () => cpuBench("proj-cpu8", CPU8_BOARD),
-    check(scene) {
-      const roms = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === PROM_ID);
-      const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
-      const words = (c: (typeof roms)[number]) => CPU8_PROGRAM.n.map((_, a) => promWord(c.data, a));
-      const is = (c: (typeof roms)[number], want: number[]) => want.every((w, a) => words(c)[a] === w);
-      const nRom = roms.find((c) => is(c, CPU8_PROGRAM.n));
-      const opRom = roms.find((c) => c !== nRom && is(c, CPU8_PROGRAM.op));
-      if (roms.length < 2) return [{ text: "На столе два ПЗУ 74S288: одно — числа, другое — команды", ok: false }];
-      if (!nRom || !opRom) {
-        const show = (c: (typeof roms)[number]) => `${c.id}: ${words(c).map((w, a) => `${a} → ${hex(w)}`).join(", ")}`;
-        return [{ text: `В ПЗУ — программа из описания (${!nRom ? "не нашлось ПЗУ с числами" : "не нашлось ПЗУ с командами"}): сейчас ${roms.map(show).join("; ")}`, ok: false }];
-      }
-      return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => cpu8Emulate(CPU8_PROGRAM, k), hex)];
-    },
+    check: cpu8Check,
+  },
+  {
+    id: "proj-cpu8m",
+    project: true,
+    after: "proj-cpu8",
+    title: "8 бит из модулей",
+    about:
+      "Тот же восьмиразрядный процессор и та же программа, но всё, что работает с числами, — на двух ваших модулях «Срез». Модуль ставится на плату штыревым разъёмом в ряд отверстий и стоит вертикально. Команда — 12 бит по одному адресу в двух ПЗУ: в одном — число N (8 бит), в другом — что делать, биты 7…4 (бит 7 — перейти на адрес N mod 16, бит 6 — вывести A, бит 5 — записать в A, бит 4 — записывается A + N, иначе само N). Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT7 — площадки J6…J13 (OUT0 — младший). Программа проверки — как у «Процессора 8 бит»: числа 0 → A5, 1 → 5A, 2 → 01, 3 → FE, 4 → 5A, 5 → 0F, 15 → 01; команды 0 → 20, 1 → 30, 2 → 70, 3 → 30, 4 → 60, 5 → 80, 15 → C0, остальные адреса — 00. Проверка та же: висящие входы, медь, RST, 24 такта CLK, RST посреди работы. Выход — в шестнадцатеричном виде.",
+    hints: [
+      "Сколько выводов разъёма у двух модулей подключаются к одному и тому же, а сколько — у каждого к своему? Какие из них — биты числа, какие — управление?",
+      "Перенос — единственное, что модули передают друг другу. Откуда младший модуль берёт свой CI и куда уходит CO старшего?",
+    ],
+    kit: [
+      chip("cnt161"),
+      { part: "other", type: "chip", tool: `chip:${PROM_ID}`, preset: {}, match: { def: PROM_ID }, label: "ПЗУ 74S288", count: 2 },
+      chip("slice4", 2),
+      chip("not", 4),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 8 },
+      { part: "resistor", ohms: 1000, count: 8 },
+    ],
+    start: () => cpuBench("proj-cpu8m", CPU8_BOARD),
+    check: cpu8Check,
   },
   {
     id: "proj-boot",

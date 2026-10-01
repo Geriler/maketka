@@ -1041,16 +1041,19 @@ export function checkLevel(level: Level, scene: Scene, chips: Record<string, Chi
   if (problems.length) return { ok: false, problems, rows: [] };
   const def = packageChip(scene, level.part, id);
   def.scene.chips = { ...chipsUsed(scene), ...(scene.chips ?? {}) };
+  // Вход КМОП, ни к чему не подключённый, уходит к середине питания: что выйдет — не угадать
+  const floating = floatingInside(def, { ...chips, ...def.scene.chips });
+  const hanging = floating.length ? [`Входы микросхем внутри висят в воздухе (ни к чему не подключены): ${floating.join(", ")}.`] : [];
   // Предел питания по паспорту — у собранной аналоговой микросхемы (у логики он в её модели)
   if (level.absMax) def.absMax = level.absMax;
   if (level.check === "osc" || level.check === "bounce" || level.check === "compare" || level.check === "opamp" || level.check === "regulator" || level.check === "sram" || level.check === "dram") {
     const all = { ...chips, ...def.scene.chips };
     const steps =
       level.check === "osc" ? oscSteps(def, level, all) : level.check === "bounce" ? bounceSteps(def, level, all) : level.check === "opamp" ? opampSteps(def, level, all) : level.check === "regulator" ? regulatorSteps(def, level, all) : level.check === "sram" ? sramSteps(def, all) : level.check === "dram" ? dramSteps(def, all) : compareSteps(def, level, all);
-    const ok = steps.every((x) => x.ok);
+    const ok = steps.every((x) => x.ok) && !hanging.length;
     return ok
       ? { ok, problems: [], rows: [], steps, def, metrics: measure(scene, [], def, all) }
-      : { ok, problems: [`${FUNC_NAMES[level.func]} работает не так: смотрите шаги с ✗.`], rows: [], steps };
+      : { ok, problems: steps.every((x) => x.ok) ? hanging : [`${FUNC_NAMES[level.func]} работает не так: смотрите шаги с ✗.`, ...hanging], rows: [], steps };
   }
   const rows = truthTable(def, level, { ...chips, ...def.scene.chips });
   const steps = !rows.every((r) => r.ok)
@@ -1064,12 +1067,39 @@ export function checkLevel(level: Level, scene: Scene, chips: Record<string, Chi
   if (!ok)
     return rows.every((r) => r.ok)
       ? { ok, problems: [`${FUNC_NAMES[level.func]}: таблица сходится, а ${level.check === "timer" ? "генератор" : "пороги"} — нет: смотрите шаги с ✗.`], rows, steps }
-      : { ok, problems: [`${FUNC_NAMES[level.func]} работает не так: смотрите строки с ✗.`], rows, diagnosis: diagnose(level, def, rows) };
+      : { ok, problems: [`${FUNC_NAMES[level.func]} работает не так: смотрите строки с ✗.`, ...hanging], rows, diagnosis: diagnose(level, def, rows) };
+  // Таблица сошлась, но вход висит: сейчас повезло, на другой плате выйдет иначе
+  if (hanging.length) return { ok: false, problems: hanging, rows };
   const all = { ...chips, ...def.scene.chips };
   const sweep = supplySweep(def, level, all, rows);
   const pt = pointFromRows(level, rows, CHECK_VOLTS, truthTable(def, level, all, CHECK_VOLTS, HEAVY_LOAD));
   const metrics = { ...measure(scene, rows, def, all), vmin: sweep.at(-1)!.volts, rOut: Math.max(...pt.rHigh, ...pt.rLow) };
   return { ok, problems: [], rows, def, metrics, ...(steps ? { steps } : {}) };
+}
+
+/**
+ * Входы микросхем начинки, чья цепь не идёт ни к выводу корпуса, ни к выходу, питанию или другой
+ * детали — только к таким же входам (или ни к чему).
+ */
+export function floatingInside(def: ChipDef, chips: Record<string, ChipDef>): string[] {
+  const netOf = new Map<string, (typeof def.nets)[number]>();
+  for (const n of def.nets) for (const [id, p] of n.members) netOf.set(`${id}:${p}`, n);
+  const roleOf = (id: string, p: number) => {
+    const c = def.parts.find((x) => x.id === id);
+    return c?.type === "chip" ? chips[c.def]?.pinRoles?.[p] : "part";
+  };
+  const out: string[] = [];
+  for (const c of def.parts) {
+    if (c.type !== "chip") continue;
+    const d = chips[c.def];
+    d?.pinRoles?.forEach((r, p) => {
+      if (r !== "in") return;
+      const n = netOf.get(`${c.id}:${p}`);
+      const driven = !!n && ((n.pins?.length ?? 0) > 0 || n.members.some(([id, q]) => { const x = roleOf(id, q); return x !== "in" && x !== "nc"; }));
+      if (!driven) out.push(`${c.id}.${p + 1}${d.pinNames?.[p] ? ` (${d.pinNames[p]})` : ""}`);
+    });
+  }
+  return out;
 }
 
 /**
