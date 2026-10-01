@@ -16,7 +16,7 @@ import { pinsOf } from "../parts";
 import { resolveChip } from "../chips/registry";
 import { free, noHurt, of, type Lesson, type LessonStep } from "./lessons";
 import { SEGMENTS, type KitItem, type LogicFunc } from "./levels";
-import { PROM_ID, promWord } from "../chips/memory";
+import { EEPROM_ID, PROM_ID, SRAM_ID, eepromWord, promWord } from "../chips/memory";
 
 /** Две макетки рядом и блок питания 5 В: плюс и минус — на верхние шины обеих. */
 function projectBench(id: string): Scene {
@@ -70,6 +70,23 @@ function runner(scene: Scene) {
  * тогда уходит к середине питания, и что выйдет — не угадать; модель этого не всегда покажет.
  */
 export function floatingInputs(scene: Scene): string[] {
+  const find = netOf(scene);
+  const driven = new Set<string>();
+  const inputs: [string, string][] = [];
+  for (const c of scene.components) {
+    const def = c.type === "chip" ? resolveChip(scene, c.def) : undefined;
+    for (let p = 0; p < pinsOf(c); p++) {
+      const node = find(pinNode(c, p));
+      const role = def?.pinRoles?.[p];
+      if (role === "in") inputs.push([node, `${c.id}.${p + 1}${def?.pinNames?.[p] ? ` (${def.pinNames[p]})` : ""}`]);
+      else if (role !== "nc") driven.add(node);
+    }
+  }
+  return inputs.filter(([n]) => !driven.has(n)).map(([, name]) => name);
+}
+
+/** Объединение узлов в цепи: провода и дорожки (без обрывов). */
+export function netOf(scene: Scene): (node: string) => string {
   const parent = new Map<string, string>();
   const find = (x: string): string => {
     const p = parent.get(x) ?? x;
@@ -85,18 +102,29 @@ export function floatingInputs(scene: Scene): string[] {
     const [a, b] = traceNodes(t);
     join(a, b);
   }
-  const driven = new Set<string>();
-  const inputs: [string, string][] = [];
-  for (const c of scene.components) {
-    const def = c.type === "chip" ? resolveChip(scene, c.def) : undefined;
-    for (let p = 0; p < pinsOf(c); p++) {
-      const node = find(pinNode(c, p));
-      const role = def?.pinRoles?.[p];
-      if (role === "in") inputs.push([node, `${c.id}.${p + 1}${def?.pinNames?.[p] ? ` (${def.pinNames[p]})` : ""}`]);
-      else if (role !== "nc") driven.add(node);
-    }
+  return find;
+}
+
+/**
+ * Выходы, которые выводят на одну цепь разом: у цепи может быть только один говорящий — два
+ * включённых выхода спорят (у памяти — пока у обеих открыт O̅E̅), даже если сейчас их уровни
+ * совпали. Смотрит по установившемуся расчёту.
+ */
+export function busFights(sim: Simulation, find: (node: string) => string): string[] {
+  const by = new Map<string, string[]>();
+  for (const c of sim.scene.components) {
+    if (c.type !== "chip") continue;
+    const model = sim.modelOf(c.id);
+    if (!model) continue;
+    const def = resolveChip(sim.scene, c.def);
+    const zm = sim.junction.get(`${c.id}:zm`) ?? 0;
+    model.outputs.forEach((p, k) => {
+      if (zm & (1 << k)) return;
+      const n = find(pinNode(c, p - 1));
+      by.set(n, [...(by.get(n) ?? []), `${c.id}.${p}${def?.pinNames?.[p - 1] ? ` (${def.pinNames[p - 1]})` : ""}`]);
+    });
   }
-  return inputs.filter(([n]) => !driven.has(n)).map(([, name]) => name);
+  return [...by.values()].filter((xs) => xs.length > 1).map((xs) => xs.join(" и "));
 }
 
 /** Где светодиод по оси X стола: по отверстию первого вывода или по месту на столе. */
@@ -442,6 +470,76 @@ export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out) 
 const chip = (func: LogicFunc, count = 1): KitItem => ({ part: "chip", func, count });
 const DISPLAY_KIT: KitItem = { part: "other", type: "display", tool: "display", preset: {}, label: "индикатор SC56-11SRWA", count: 1 };
 const SEG_RESISTORS: KitItem = { part: "resistor", ohms: 330, count: 7 };
+
+// ─── Загрузчик: программа в EEPROM, при старте копируется в ОЗУ, исполняется из ОЗУ ─────────
+
+/** Тактов загрузки: по одному на каждый из 16 адресов. */
+export const BOOT_CLOCKS = 16;
+/**
+ * Программа загрузчика — как у 4-битного, но с A ← A + 10 в начале: после честной загрузки A = 0
+ * и выход тот же; если команды исполнялись и во время загрузки, в A к запуску не 0 — видно сразу.
+ */
+export const BOOT_PROGRAM = [0x3a, ...CPU_PROGRAM.slice(1)];
+/** Плата загрузчика, шагов: 4-битный процессор, две большие памяти и логика загрузки. */
+export const BOOT_BOARD = { cols: 48, rows: 34 };
+
+/**
+ * Прогнать загрузчик: RST и 16 тактов загрузки (выход должен остаться нулём); потом EEPROM
+ * стирается — дальше процессор может брать команды только из ОЗУ — и ещё CPU_CLOCKS тактов;
+ * потом EEPROM возвращается, RST посреди работы — снова загрузка и 6 тактов.
+ */
+export function bootRun(scene: Scene) {
+  const r = runner(scene);
+  const g1 = r.sim.scene.components.find((c) => c.id === "G1")!;
+  const v = (hole: string) => (r.sim.solution.voltage.get(HOLE_BY_ID.get(hole)!.node) ?? 0) - (r.sim.solution.voltage.get(pinNode(g1, 0)) ?? 0);
+  const out = () => CPU_PINS.out.reduce((m, h, k) => m | (v(h) > 2.5 ? 1 << k : 0), 0);
+  // Спор на шине — смотреть и при нажатой кнопке, и при отпущенной
+  const find = netOf(r.sim.scene);
+  const fights = new Set<string>();
+  const look = () => busFights(r.sim, find).forEach((f) => fights.add(f));
+  const press = (id: string) => {
+    r.sim.held.add(id);
+    r.sim.solve();
+    r.run(0.02);
+    look();
+    r.sim.held.delete(id);
+    r.sim.solve();
+    r.run(0.02);
+    look();
+  };
+  const ee = r.sim.scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === EEPROM_ID);
+  const saved = ee.map((c) => c.data);
+  r.run(0.1);
+  // Мусор в ОЗУ после включения — какой выпадет; проверка берёт худший: в каждом слове программы
+  // все биты не те, — иначе незагруженный адрес мог бы случайно совпасть с нужной командой
+  for (const c of r.sim.scene.components) {
+    const ram = c.type === "chip" && c.def === SRAM_ID ? (r.sim.memory.get(`${c.id}:ram`) as number[] | undefined) : undefined;
+    if (ram) BOOT_PROGRAM.forEach((w, a) => (ram[a] = ~w & 255));
+  }
+  press("SB2");
+  const boot: number[] = [];
+  for (let i = 0; i < BOOT_CLOCKS; i++) {
+    press("SB1");
+    boot.push(out());
+  }
+  // Стереть EEPROM: что дальше — только из ОЗУ
+  for (const c of ee) delete c.data;
+  r.sim.solve();
+  const outs: number[] = [];
+  for (let i = 0; i < CPU_CLOCKS; i++) {
+    press("SB1");
+    outs.push(out());
+  }
+  ee.forEach((c, i) => (saved[i] ? (c.data = saved[i]) : delete c.data));
+  r.sim.solve();
+  press("SB2");
+  const again: number[] = [];
+  for (let i = 0; i < BOOT_CLOCKS + 6; i++) {
+    press("SB1");
+    again.push(out());
+  }
+  return { boot, outs, again, fights: [...fights], hurt: r.hurt };
+}
 
 /**
  * Шаги проверки процессора после программы: висящие входы, медь, сброс, такт за тактом, сброс
@@ -806,6 +904,57 @@ export const PROJECTS: Lesson[] = [
         return [{ text: `В ПЗУ — программа из описания (${!nRom ? "не нашлось ПЗУ с числами" : "не нашлось ПЗУ с командами"}): сейчас ${roms.map(show).join("; ")}`, ok: false }];
       }
       return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => cpu8Emulate(CPU8_PROGRAM, k), hex)];
+    },
+  },
+  {
+    id: "proj-boot",
+    project: true,
+    after: "proj-cpu",
+    title: "Загрузчик",
+    about:
+      "Тот же четырёхразрядный процессор, но команды он берёт не из ПЗУ, а из ОЗУ HM62256B — как настоящие компьютеры. Программа хранится в EEPROM AT28C256 (без питания не пропадает), а ОЗУ после включения полно мусора. Поэтому после RST сначала идёт загрузка: 16 тактов CLK — по одному на адрес 0…15 — байт из EEPROM переписывается в ОЗУ по тому же адресу; выход в это время — 0, и команды не исполняются. На 17-м такте процессор начинает работать: адрес 0, 1, 2… — и команды из ОЗУ, как у четырёхразрядного (бит 7 — переход на N, бит 6 — вывести A, бит 5 — записать в A, бит 4 — A + N). Плата двусторонняя под SMD: CLK — J3, RST — J5, питание — J1 (общий) и J2 (+5 В), выход OUT0…OUT3 — J6…J9. Программа в EEPROM: 0 → 3A (A ← A + 10), 1 → 35, 2 → 71, 3 → 3E, 4 → 65, 5 → 8F, 15 → C1, остальные — 00. Проверка сверяет EEPROM, смотрит, что ни один вход не висит и медь не задевает чужую, жмёт RST и 16 раз CLK (выход должен остаться 0), потом стирает EEPROM — дальше работать можно только из ОЗУ — и ещё 24 раза CLK, сверяя выход; потом возвращает EEPROM, жмёт RST посреди работы и проверяет, что загрузка и запуск повторились. Всё это время на каждую цепь должна выводить только одна микросхема.",
+    hints: [
+      "Процессор берёт команды с одной шины данных. Кто выставляет на неё байт во время загрузки и кто — во время работы? Кому надо помнить, что загрузка уже закончилась, и по какому сигналу счётчика это узнать?",
+      "Во время загрузки на шине — байты программы, то есть команды. Что не даст процессору их исполнить? И в какой половине такта писать в ОЗУ, чтобы адрес в этот момент уже не менялся?",
+    ],
+    kit: [
+      chip("cnt161"),
+      chip("reg173", 2),
+      chip("add4"),
+      chip("mux4q"),
+      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 1 },
+      { part: "other", type: "chip", tool: `chip:${SRAM_ID}`, preset: { smd: true }, match: { def: SRAM_ID }, label: "ОЗУ HM62256B", count: 1 },
+      chip("dffr"),
+      chip("nand", 3),
+      chip("or", 2),
+      chip("not", 2),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 4 },
+      { part: "resistor", ohms: 1000, count: 4 },
+    ],
+    start: () => cpuBench("proj-boot", BOOT_BOARD),
+    check(scene) {
+      const ee = scene.components.find((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === EEPROM_ID);
+      const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+      const words = BOOT_PROGRAM.map((_, a) => eepromWord(ee?.data, a));
+      if (!ee || !BOOT_PROGRAM.every((w, a) => words[a] === w)) return [{ text: ee ? `В EEPROM — программа из описания: сейчас ${words.map((w, a) => `${a} → ${hex(w)}`).join(", ")}` : "На плате EEPROM AT28C256", ok: false }];
+      const { boot, outs, again, fights, hurt } = bootRun(scene);
+      const want = cpuEmulate(BOOT_PROGRAM, CPU_CLOCKS);
+      const bad = outs.findIndex((o, i) => o !== want[i]);
+      const wantAgain = [...Array(BOOT_CLOCKS).fill(0), ...cpuEmulate(BOOT_PROGRAM, 6)];
+      const badAgain = again.findIndex((o, i) => o !== wantAgain[i]);
+      const floating = floatingInputs(scene);
+      const shorts = foreignContacts(scene);
+      const shortName = (k: (typeof shorts)[number]) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`;
+      return [
+        { text: "В EEPROM — программа из описания", ok: true },
+        { text: floating.length ? `Входы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы микросхем куда-то подключены", ok: !floating.length },
+        { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
+        { text: fights.length ? `Две микросхемы выводят на одну цепь разом: ${fights.slice(0, 3).join("; ")}${fights.length > 3 ? ` и ещё ${fights.length - 3}` : ""}` : "На каждую цепь выводит только одна микросхема", ok: !fights.length },
+        { text: `Загрузка — 16 тактов после RST, выход 0: ${boot.join(" ")}`, ok: boot.every((o) => o === 0) },
+        { text: `EEPROM стёрта — работа из ОЗУ, такт за тактом: ${outs.join(" ")}${bad >= 0 ? ` (на ${bad + 1}-м такте нужно ${want[bad]})` : ""}`, ok: bad < 0 },
+        { text: `RST посреди работы — снова загрузка и запуск: ${again.join(" ")}${badAgain >= 0 ? ` (нужно ${wantAgain.join(" ")})` : ""}`, ok: badAgain < 0 },
+        noHurt([...hurt]),
+      ];
     },
   },
 ];

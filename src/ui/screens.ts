@@ -141,6 +141,7 @@ const PLACE: Record<string, [number, number]> = {
   "proj-sar": [9, 3.6],
   "proj-cpu": [9, 6],
   "proj-cpu8": [10, 6],
+  "proj-boot": [10, 7.2],
 };
 /**
  * Узлы карты — группы уровней, иначе стрелок не разобрать:
