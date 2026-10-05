@@ -46,7 +46,7 @@ const CHIP_CATS: { name: string; funcs: LogicFunc[] }[] = [
   { name: "Счёт и время", funcs: ["div2", "cnt4", "tffr", "cnt393", "cnt1", "cnt161", "johnson", "cnt4017", "timer", "osc", "rcdb", "debounce"] },
   { name: "Шина", funcs: ["tbuf", "tbuf4", "buf8z", "bus245"] },
   { name: "Аналоговые", funcs: ["cmp", "cmp2", "opamp", "opamp2", "vref", "reg5"] },
-  { name: "Модули", funcs: ["slice4"] },
+  { name: "Модули", funcs: ["slice4", "slice4a"] },
 ];
 const OWN = "Свои";
 /** Раздел микросхемы по инструменту chip:ref:… / chip:career:… (обозначение уровня карьеры). */

@@ -405,8 +405,9 @@ export function cpu8Emulate(prog: { n: number[]; op: number[] }, clocks: number)
 /**
  * Коды операций М2 (биты 15…12 слова; в ПЗУ команд — старшая тетрада байта, младшая — 0):
  * NOP; LDI n: A ← n; LD n: A ← RAM[n]; ST n: RAM[n] ← A; ADDI n, SUBI n, ADD n, SUB n — A ← A ± n
- * (или ± RAM[n]), ставят C (перенос; у вычитания — «не было заёма») и Z; OUT: выход ← A; JMP n;
- * JC, JZ, JNZ n — переход по флагу; HLT — счётчик команд стоит.
+ * (или ± RAM[n]), ставят флаг C (перенос; у вычитания — «не было заёма»); OUT: выход ← A; JMP n;
+ * JC n — переход, если C = 1; JZ, JNZ n — если A = 0 (A ≠ 0) сейчас: отдельного флага нуля нет,
+ * как у многих аккумуляторных машин; HLT — счётчик команд стоит.
  */
 export const M2 = { NOP: 0, LDI: 1, LD: 2, ST: 3, ADDI: 4, SUBI: 5, ADD: 6, SUB: 7, OUT: 8, JMP: 9, JC: 10, JZ: 11, JNZ: 12, HLT: 15 } as const;
 
@@ -414,7 +415,7 @@ export const M2 = { NOP: 0, LDI: 1, LD: 2, ST: 3, ADDI: 4, SUBI: 5, ADD: 6, SUB:
 export function m2Emulate(prog: { op: number[]; n: number[] }, clocks: number, bits = 8, pcBits = 4): number[] {
   const mod = 2 ** bits, pcMod = 2 ** pcBits;
   const ram = new Map<number, number>();
-  let pc = 0, a = 0, out = 0, c = false, z = false;
+  let pc = 0, a = 0, out = 0, c = false;
   const outs: number[] = [];
   for (let i = 0; i < clocks; i++) {
     const code = (prog.op[pc] ?? 0) >> 4, n = prog.n[pc] ?? 0;
@@ -423,7 +424,6 @@ export function m2Emulate(prog: { op: number[]; n: number[] }, clocks: number, b
       const r = sub ? a + (mod - 1 - b) + 1 : a + b;
       c = r >= mod;
       a = r % mod;
-      z = a === 0;
     };
     switch (code) {
       case M2.LDI: a = n; break;
@@ -436,8 +436,8 @@ export function m2Emulate(prog: { op: number[]; n: number[] }, clocks: number, b
       case M2.OUT: out = a; break;
       case M2.JMP: next = n % pcMod; break;
       case M2.JC: if (c) next = n % pcMod; break;
-      case M2.JZ: if (z) next = n % pcMod; break;
-      case M2.JNZ: if (!z) next = n % pcMod; break;
+      case M2.JZ: if (a === 0) next = n % pcMod; break;
+      case M2.JNZ: if (a !== 0) next = n % pcMod; break;
       case M2.HLT: next = pc; break;
     }
     pc = next;
@@ -501,6 +501,38 @@ function flagsCheck(scene: Scene): LessonStep[] {
     return [{ text: `В ПЗУ — программа из описания (${!opRom ? "не нашлось ПЗУ с кодами операций" : "не нашлось ПЗУ с числами"}): сейчас ${roms.map(show).join("; ")}`, ok: false }];
   }
   return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2Emulate(FLAGS_PROGRAM, k), hex)];
+}
+
+/**
+ * Программа «Памяти и проверки на ноль»: в ОЗУ кладутся 5A и A5 по адресам A5 и 5A (каждый бит
+ * данных и адреса — и ноль, и единица), читаются LD, ADD, SUB; JZ и JNZ — и переходят, и нет.
+ * 0: LDI 5A; 1: ST A5; 2: LDI A5; 3: ST 5A; 4: LD A5 (5A); 5: ADD 5A (FF); 6: OUT; 7: SUB A5 (A5);
+ * 8: OUT; 9: SUBI A5 (00); 10: JZ 12; 11: JNZ 0; 12: OUT; 13: JNZ 15 (не переходит); 14: ADDI 01;
+ * 15: JNZ 6 — второй круг: выведет 01, A7, потом JZ не перейдёт, JNZ 0 — с начала.
+ */
+export const MEM_PROGRAM = {
+  op: [0x10, 0x30, 0x10, 0x30, 0x20, 0x60, 0x80, 0x70, 0x80, 0x50, 0xb0, 0xc0, 0x80, 0xc0, 0x40, 0xc0],
+  n: [0x5a, 0xa5, 0xa5, 0x5a, 0xa5, 0x5a, 0x00, 0xa5, 0x00, 0xa5, 0x0c, 0x00, 0x00, 0x0f, 0x01, 0x06],
+};
+/** Чем проверка заполняет ОЗУ после включения: не 5A и не A5 — незаписанная ячейка видна. */
+export const MEM_FILL = 0x3c;
+
+/** Проверка «Памяти и проверки на ноль». */
+function memCheck(scene: Scene): LessonStep[] {
+  const roms = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === PROM_ID);
+  const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+  const words = (c: (typeof roms)[number]) => MEM_PROGRAM.op.map((_, a) => promWord(c.data, a));
+  const is = (c: (typeof roms)[number], want: number[]) => want.every((w, a) => words(c)[a] === w);
+  if (!scene.components.some((c) => c.type === "chip" && c.def === EEPROM_ID)) return [{ text: "На плате EEPROM AT28C256 — декодер команд", ok: false }];
+  if (!scene.components.some((c) => c.type === "chip" && c.def === SRAM_ID)) return [{ text: "На плате ОЗУ HM62256B — память данных", ok: false }];
+  if (roms.length < 2) return [{ text: "На плате два ПЗУ 74S288: одно — коды операций, другое — числа", ok: false }];
+  const opRom = roms.find((c) => is(c, MEM_PROGRAM.op));
+  const nRom = roms.find((c) => c !== opRom && is(c, MEM_PROGRAM.n));
+  if (!nRom || !opRom) {
+    const show = (c: (typeof roms)[number]) => `${c.id}: ${words(c).map((w, a) => `${a} → ${hex(w)}`).join(", ")}`;
+    return [{ text: `В ПЗУ — программа из описания (${!opRom ? "не нашлось ПЗУ с кодами операций" : "не нашлось ПЗУ с числами"}): сейчас ${roms.map(show).join("; ")}`, ok: false }];
+  }
+  return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2Emulate(MEM_PROGRAM, k), hex, MEM_FILL)];
 }
 
 // ─── Процессор 32 бит: восемь модулей «Срез», число N — 4 байта в четырёх ПЗУ ─────
@@ -616,8 +648,10 @@ function cpuBench(id: string, board = CPU_BOARD): Scene {
 export const CPU_CLOCKS = 24;
 
 /** Прогнать процессор: сброс, такты по одному, после каждого — что на выходе; потом сброс посреди работы. */
-export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out) {
+export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out, ramFill?: number) {
   const r = runner(scene);
+  const find = netOf(r.sim.scene);
+  const fights = new Set<string>();
   const g1 = r.sim.scene.components.find((c) => c.id === "G1")!;
   const v = (hole: string) => (r.sim.solution.voltage.get(HOLE_BY_ID.get(hole)!.node) ?? 0) - (r.sim.solution.voltage.get(pinNode(g1, 0)) ?? 0);
   // Число — сложением, а не «|»: у 32-битного старший разряд «1 << 31» стал бы отрицательным
@@ -628,11 +662,19 @@ export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out) 
     r.sim.held.add(id);
     r.sim.solve();
     r.run(0.02);
+    busFights(r.sim, find).forEach((f) => fights.add(f));
     r.sim.held.delete(id);
     r.sim.solve();
     r.run(0.02);
+    busFights(r.sim, find).forEach((f) => fights.add(f));
   };
   r.run(0.1);
+  // Мусор в ОЗУ после включения — какой выпадет; проверка может взять заведомо неверный
+  if (ramFill !== undefined)
+    for (const c of r.sim.scene.components) {
+      const ram = c.type === "chip" && c.def === SRAM_ID ? (r.sim.memory.get(`${c.id}:ram`) as number[] | undefined) : undefined;
+      if (ram) ram.fill(ramFill);
+    }
   press("SB2");
   const afterReset = out();
   const outs: number[] = [];
@@ -647,7 +689,7 @@ export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out) 
     press("SB1");
     again.push(out());
   }
-  return { afterReset, outs, again, hurt: r.hurt };
+  return { afterReset, outs, again, fights: [...fights], hurt: r.hurt };
 }
 
 const chip = (func: LogicFunc, count = 1): KitItem => ({ part: "chip", func, count });
@@ -728,8 +770,8 @@ export function bootRun(scene: Scene) {
  * Шаги проверки процессора после программы: висящие входы, медь, сброс, такт за тактом, сброс
  * посреди работы, перегрев. want(k) — что должно быть на выходе после k тактов (эмулятор).
  */
-function cpuSteps(scene: Scene, outPins: readonly string[], want: (clocks: number) => number[], fmt: (v: number) => string): LessonStep[] {
-  const { afterReset, outs, again, hurt } = cpuRun(scene, outPins);
+function cpuSteps(scene: Scene, outPins: readonly string[], want: (clocks: number) => number[], fmt: (v: number) => string, ramFill?: number): LessonStep[] {
+  const { afterReset, outs, again, fights, hurt } = cpuRun(scene, outPins, ramFill);
   const w = want(CPU_CLOCKS);
   const bad = outs.findIndex((o, i) => o !== w[i]);
   const wAgain = want(again.length);
@@ -741,6 +783,7 @@ function cpuSteps(scene: Scene, outPins: readonly string[], want: (clocks: numbe
   return [
     { text: floating.length ? `Выводы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы и выводы питания микросхем куда-то подключены", ok: !floating.length },
     { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
+    { text: fights.length ? `Две микросхемы выводят на одну цепь разом: ${fights.slice(0, 3).join("; ")}${fights.length > 3 ? ` и ещё ${fights.length - 3}` : ""}` : "На каждую цепь выводит только одна микросхема", ok: !fights.length },
     { text: `После RST на выходе 0 — сейчас ${fmt(afterReset)}`, ok: afterReset === 0 },
     { text: `Такт за тактом на выходе: ${list(outs)}${bad >= 0 ? ` (на ${bad + 1}-м такте нужно ${fmt(w[bad])})` : ""}`, ok: bad < 0 },
     { text: `RST посреди работы — и снова с начала: ${list(again)}${badAgain >= 0 ? ` (нужно ${list(wAgain)})` : ""}`, ok: badAgain < 0 },
@@ -1146,6 +1189,37 @@ export const PROJECTS: Lesson[] = [
     ],
     start: () => cpuBench("proj-flags", CPU8_BOARD),
     check: flagsCheck,
+  },
+  {
+    id: "proj-mem",
+    project: true,
+    after: "proj-flags",
+    title: "Память и проверка на ноль",
+    about:
+      "Процессор получает память данных — ОЗУ HM62256B — и переходы по нулю. Новые команды: 2 — LD (A ← RAM[N]), 3 — ST (RAM[N] ← A), 6 — ADD (A ← A + RAM[N]), 7 — SUB (A ← A − RAM[N]), B — JZ (перейти на N mod 16, если A = 0), C — JNZ (если A ≠ 0). ADD и SUB ставят флаг C, как ADDI и SUBI. Отдельного флага нуля нет: JZ и JNZ смотрят, что в A сейчас. Адрес в ОЗУ — само N (младшие 8 разрядов адреса; старшие — 0). Прежние команды — как раньше: 0 NOP, 1 LDI, 4 ADDI, 5 SUBI, 8 OUT, 9 JMP, A JC, F HLT. Каждая — за один такт CLK, по тому, что было до фронта; ST записывает в ОЗУ то, что было в A. Декодер — EEPROM AT28C256, таблицу вписываете вы. Числа — на двух ваших модулях «Срез 2». ОЗУ после включения полно мусора: проверка заполняет его заведомо неверным. Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT7 — J6…J13. Программа проверки — коды: 0 → 10, 1 → 30, 2 → 10, 3 → 30, 4 → 20, 5 → 60, 6 → 80, 7 → 70, 8 → 80, 9 → 50, 10 → B0, 11 → C0, 12 → 80, 13 → C0, 14 → 40, 15 → C0; числа: 0 → 5A, 1 → A5, 2 → A5, 3 → 5A, 4 → A5, 5 → 5A, 6 → 00, 7 → A5, 8 → 00, 9 → A5, 10 → 0C, 11 → 00, 12 → 00, 13 → 0F, 14 → 01, 15 → 06. Проверка сверяет ПЗУ, смотрит висящие входы, медь и чтобы на шину не выводили две микросхемы разом, жмёт RST, 24 раза CLK и RST посреди работы. Выход — в шестнадцатеричном виде.",
+    hints: [
+      "У ОЗУ выводы данных — и вход, и выход по одним проводам. Кто ставит на них число, когда ОЗУ читают, и кто — когда в него пишут? Что должно молчать в каждом случае?",
+      "Второе слагаемое теперь берётся то из ПЗУ, то из ОЗУ. Что выбирает между ними? А «A = 0» — это сколько бит, и как свести их к одному сигналу для декодера?",
+    ],
+    kit: [
+      chip("cnt161"),
+      { part: "other", type: "chip", tool: `chip:${PROM_ID}`, preset: {}, match: { def: PROM_ID }, label: "ПЗУ 74S288", count: 2 },
+      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 2 },
+      { part: "other", type: "chip", tool: `chip:${SRAM_ID}`, preset: { smd: true }, match: { def: SRAM_ID }, label: "ОЗУ HM62256B", count: 1 },
+      chip("slice4a", 2),
+      chip("mux4q", 2),
+      chip("buf8z"),
+      chip("xor", 8),
+      chip("or", 7),
+      chip("nor"),
+      chip("dffr"),
+      chip("mux"),
+      chip("not", 2),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 8 },
+      { part: "resistor", ohms: 1000, count: 8 },
+    ],
+    start: () => cpuBench("proj-mem", CPU8_BOARD),
+    check: memCheck,
   },
   {
     id: "proj-cpu32",

@@ -146,7 +146,9 @@ const PLACE: Record<string, [number, number]> = {
   "proj-cpu32": [10, 9.6],
   "proj-dec": [11, 8.4],
   "proj-flags": [11, 9.6],
+  "proj-mem": [11, 10.8],
   slice: [7, 3.6],
+  slice2: [7, 2.4],
 };
 /**
  * Узлы карты — группы уровней, иначе стрелок не разобрать:

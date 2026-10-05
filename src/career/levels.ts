@@ -11,7 +11,7 @@ import type { ChipPackage, ChipPinRole } from "../model/breadboard";
 import type { DiodeKind, MosfetKind, TransistorKind } from "../model/types";
 
 /** Логическая функция компонента. */
-export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173" | "bus245" | "rom8" | "ram4" | "sram1" | "dram1" | "slice4";
+export type LogicFunc = "not" | "nand" | "nor" | "and" | "or" | "xor" | "buf" | "xnor" | "xnor4" | "eq2" | "mux" | "half" | "full" | "add4" | "sr" | "dlatch" | "dff" | "schmitt" | "osc" | "div2" | "cnt4" | "sreg4" | "dlatchr" | "dffr" | "tffr" | "sreg8" | "cnt393" | "dec2" | "dec3" | "seg7" | "bcd7" | "rcdb" | "debounce" | "cmp" | "cmp2" | "timer" | "mag1" | "mag4" | "sreg595" | "addsub" | "opamp" | "opamp2" | "vref" | "reg5" | "johnson" | "cnt4017" | "tbuf" | "tbuf4" | "buf8z" | "reg8z" | "mux4q" | "cnt1" | "cnt161" | "reg173" | "bus245" | "rom8" | "ram4" | "sram1" | "dram1" | "slice4" | "slice4a";
 
 /** Деталь набора: сколько штук и что именно (тип и номинал). */
 export type KitItem =
@@ -155,7 +155,7 @@ export function goalMet(g: Goal, m: { width: number; height: number; links: numb
 }
 
 /** Схемы с памятью: выход зависит не только от входов, но и от того, что было раньше. */
-export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017", "reg8z", "cnt1", "cnt161", "reg173", "ram4", "slice4"];
+export const SEQUENTIAL: LogicFunc[] = ["sr", "dlatch", "dff", "div2", "cnt4", "sreg4", "dlatchr", "dffr", "tffr", "sreg8", "cnt393", "bcd7", "timer", "sreg595", "johnson", "cnt4017", "reg8z", "cnt1", "cnt161", "reg173", "ram4", "slice4", "slice4a"];
 
 /**
  * Сегменты a…g цифр 0…9 — как у 74HC4511 по таблице TI (SCHS279E): шестёрка без верхней черты,
@@ -247,7 +247,7 @@ export function seqNext(func: LogicFunc, q: number, prev: boolean[] | undefined,
   // Срез процессора (CLK, RST, W̅A̅, W̅O̅, SEL, CI, N0…N3): q — A в младших 4 битах, выход — в старших.
   // RST = 1 — оба в ноль сразу; по фронту CLK (по входам до фронта): при W̅A̅ = 0 в A — N или
   // A + N + CI (SEL = 1; перенос за 15 теряется), при W̅O̅ = 0 в выход — прежнее A
-  if (func === "slice4") {
+  if (func === "slice4" || func === "slice4a") {
     if (bits[1]) return 0;
     if (!rising(prev, bits, 0)) return q;
     const a = q & 15, n = num(prev!.slice(6, 10));
@@ -283,6 +283,8 @@ export function seqOuts(func: LogicFunc, q: number, bits: boolean[]): boolean[] 
   if (func === "reg173") return [0, 1, 2, 3].map((k) => !!(q & (1 << k)));
   // Срез: выход O0…O3 и перенос CO — из сумматора, A + N + CI сейчас (от SEL не зависит)
   if (func === "slice4") return [...[0, 1, 2, 3].map((k) => !!((q >> 4) & (1 << k))), (q & 15) + num(bits.slice(6, 10)) + +bits[5] > 15];
+  // Срез 2: то же и ещё A0…A3 наружу
+  if (func === "slice4a") return [...seqOuts("slice4", q, bits), ...[0, 1, 2, 3].map((k) => !!(q & (1 << k)))];
   if (func === "ram4") return [0, 1, 2, 3].map((k) => !!((q >> (4 * num(bits.slice(2, 4)))) & (1 << k)));
   // Джонсон: A…E, затем Ā…Ē
   if (func === "johnson") return [0, 1, 2, 3, 4].map((k) => !!(q & (1 << k))).concat([0, 1, 2, 3, 4].map((k) => !(q & (1 << k))));
@@ -302,6 +304,7 @@ export function seqState(func: LogicFunc, outs: boolean[]): number {
   if (func === "cnt161") return outs.slice(0, 4).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
   // Срез: по выходам видно только регистр выхода; A не видно — пусть ноль (до сброса — что попало)
   if (func === "slice4") return outs.slice(0, 4).reduce((m, b, k) => m | (b ? 1 << k : 0), 0) << 4;
+  if (func === "slice4a") return (outs.slice(0, 4).reduce((m, b, k) => m | (b ? 1 << k : 0), 0) << 4) | outs.slice(5, 9).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
   return ["cnt4", "sreg4", "sreg8", "cnt393", "reg173"].includes(func) ? outs.reduce((m, b, k) => m | (b ? 1 << k : 0), 0) : +!!outs[0];
 }
 
@@ -361,6 +364,7 @@ export function truth(func: LogicFunc, bits: boolean[]): boolean[] {
     case "cnt161":
     case "reg173":
     case "slice4":
+    case "slice4a":
     case "ram4":
     case "bcd7":
     case "timer":
@@ -2857,6 +2861,72 @@ export const LEVELS: Level[] = [
     },
   },
   {
+    id: "slice2",
+    func: "slice4a",
+    part: "Срез 2",
+    title: "Срез с регистром A наружу",
+    about:
+      "Тот же срез процессора на модуле, но регистр A виден снаружи: без этого A нельзя ни записать в память, ни проверить на ноль. Поведение — как у «Среза»: по фронту CLK, по тому, что было до фронта: при W̅A̅ = 0 в A записывается N (SEL = 0) или A + N + CI (SEL = 1; перенос за 15 теряется), при W̅A̅ = 1 A хранится; при W̅O̅ = 0 регистр выхода берёт прежнее A; RST = 1 — A и выход в ноль сразу; CO — перенос из суммы A + N + CI сейчас. Новое — выводы A0…A3: что сейчас в A, всегда. Модуль на разъёме SIP-24: 1–4 N0…N3, 5 SEL, 6 CLK, 7 RST, 8 W̅A̅, 9 W̅O̅, 10 GND, 11 CI, 12 CO, 13–16 O0…O3, 17–20 A0…A3, 21–23 не подключены, 24 VCC. Проверяется последовательностью шагов.",
+    hints: [
+      "Всё внутри — как у первого «Среза». Где в схеме уже есть то, что нужно вывести на A0…A3?",
+      "Выход регистра может питать сразу несколько входов. Сколько их теперь у каждого бита A — и куда идёт каждый?",
+    ],
+    package: "SIP",
+    roles: [..."iiiiiiiiig".split(""), "i", "o", "o", "o", "o", "o", "o", "o", "o", "o", "n", "n", "n", "v"].map((r) => ({ i: "in", o: "out", g: "gnd", v: "vcc", n: "nc" })[r] as ChipPinRole),
+    names: ["N0", "N1", "N2", "N3", "SEL", "CLK", "RST", "W̅A̅", "W̅O̅", "", "CI", "CO", "O0", "O1", "O2", "O3", "A0", "A1", "A2", "A3", "", "", "", ""],
+    io: { inputs: [6, 7, 8, 9, 5, 11, 1, 2, 3, 4], outputs: [13, 14, 15, 16, 12, 17, 18, 19, 20] },
+    // CLK RST W̅A̅ W̅O̅ SEL CI N0…N3
+    sequence: seq(
+      "*0100000000",
+      "0001001010", "1001001010",
+      "0001100110", "1001100110",
+      "0000110111", "1000110111",
+      "0010000000", "1010000000",
+      "0011111111", "1011111111",
+      "0100000000",
+      "0000001111", "1000001111",
+      "0001011000", "1001011000",
+      "0000100001", "1000100001",
+      "0010000000", "1010000000",
+      "0100001111",
+      "0001000010", "1001000010",
+      "0001100000", "1001100000",
+      "0010000000", "1010000000",
+    ),
+    kit: [
+      { part: "chip", func: "mux4q", count: 1 },
+      { part: "chip", func: "add4", count: 1 },
+      { part: "chip", func: "reg173", count: 2 },
+    ],
+    recipe: {
+      // Поле модуля SIP-24: 26 столбцов, ряды A…N; разъём — у ряда N
+      parts: [icm("MX", "mux4q", "D", 2), icm("AD", "add4", "D", 13), icm("RA", "reg173", "J", 2), icm("RO", "reg173", "J", 13)],
+      nets: [
+        ...power("P24", "P10", ["MX", "AD", "RA", "RO"].map((id) => ({ id, vcc: 16, gnd: 8 }))),
+        // Мультиплексор всегда включён; регистры: выходы всегда включены, второе разрешение записи — общий
+        ["P10", "MX.15", "RA.1", "RA.2", "RA.10", "RO.1", "RO.2", "RO.10"],
+        ["P5", "MX.1"],
+        ["P6", "RA.7", "RO.7"],
+        ["P7", "RA.15", "RO.15"],
+        ["P8", "RA.9"],
+        ["P9", "RO.9"],
+        ["P11", "AD.7"],
+        ["P12", "AD.9"],
+        // Бит k: N — на B сумматора и I0 мультиплексора; A — на A сумматора и D выхода; сумма — на I1; Y — на D регистра A
+        ...[0, 1, 2, 3].flatMap((k) => {
+          const [i0, i1, y] = [[2, 3, 4], [5, 6, 7], [11, 10, 9], [14, 13, 12]][k];
+          return [
+            [`P${k + 1}`, `AD.${[6, 2, 15, 11][k]}`, `MX.${i0}`],
+            [`RA.${3 + k}`, `AD.${[5, 3, 14, 12][k]}`, `RO.${14 - k}`, `P${17 + k}`],
+            [`AD.${[4, 1, 13, 10][k]}`, `MX.${i1}`],
+            [`MX.${y}`, `RA.${14 - k}`],
+            [`RO.${3 + k}`, `P${13 + k}`],
+          ];
+        }),
+      ],
+    },
+  },
+  {
     id: "ram4",
     func: "ram4",
     part: "ОЗУ 4 × 4",
@@ -3244,6 +3314,7 @@ export const FUNC_NAMES: Record<LogicFunc, string> = {
   cnt161: "Синхронный счётчик 4 бит",
   reg173: "Регистр 4 бит с тремя состояниями",
   slice4: "Срез процессора 4 бит (модуль)",
+  slice4a: "Срез 2: регистр A наружу (модуль)",
   bus245: "Двунаправленный буфер шины",
   rom8: "ПЗУ 8 × 4 на диодах",
   ram4: "ОЗУ 4 × 4",
