@@ -394,6 +394,80 @@ export function cpu8Emulate(prog: { n: number[]; op: number[] }, clocks: number)
   return outs;
 }
 
+// ─── ISA «М2»: код операции в старшем байте слова, число N — в младшем ─────────────
+
+/**
+ * Коды операций М2 (биты 15…12 слова; в ПЗУ команд — старшая тетрада байта, младшая — 0):
+ * NOP; LDI n: A ← n; LD n: A ← RAM[n]; ST n: RAM[n] ← A; ADDI n, SUBI n, ADD n, SUB n — A ← A ± n
+ * (или ± RAM[n]), ставят C (перенос; у вычитания — «не было заёма») и Z; OUT: выход ← A; JMP n;
+ * JC, JZ, JNZ n — переход по флагу; HLT — счётчик команд стоит.
+ */
+export const M2 = { NOP: 0, LDI: 1, LD: 2, ST: 3, ADDI: 4, SUBI: 5, ADD: 6, SUB: 7, OUT: 8, JMP: 9, JC: 10, JZ: 11, JNZ: 12, HLT: 15 } as const;
+
+/** Что на выходе машины М2 после каждого такта (от сброса): op — байты кодов, n — числа; bits — разрядность, pcBits — счётчика команд. */
+export function m2Emulate(prog: { op: number[]; n: number[] }, clocks: number, bits = 8, pcBits = 4): number[] {
+  const mod = 2 ** bits, pcMod = 2 ** pcBits;
+  const ram = new Map<number, number>();
+  let pc = 0, a = 0, out = 0, c = false, z = false;
+  const outs: number[] = [];
+  for (let i = 0; i < clocks; i++) {
+    const code = (prog.op[pc] ?? 0) >> 4, n = prog.n[pc] ?? 0;
+    let next = (pc + 1) % pcMod;
+    const arith = (b: number, sub: boolean) => {
+      const r = sub ? a + (mod - 1 - b) + 1 : a + b;
+      c = r >= mod;
+      a = r % mod;
+      z = a === 0;
+    };
+    switch (code) {
+      case M2.LDI: a = n; break;
+      case M2.LD: a = ram.get(n) ?? 0; break;
+      case M2.ST: ram.set(n, a); break;
+      case M2.ADDI: arith(n, false); break;
+      case M2.SUBI: arith(n, true); break;
+      case M2.ADD: arith(ram.get(n) ?? 0, false); break;
+      case M2.SUB: arith(ram.get(n) ?? 0, true); break;
+      case M2.OUT: out = a; break;
+      case M2.JMP: next = n % pcMod; break;
+      case M2.JC: if (c) next = n % pcMod; break;
+      case M2.JZ: if (z) next = n % pcMod; break;
+      case M2.JNZ: if (!z) next = n % pcMod; break;
+      case M2.HLT: next = pc; break;
+    }
+    pc = next;
+    outs.push(out);
+  }
+  return outs;
+}
+
+/**
+ * Программа «Декодера команд»: каждая из пяти команд и пустая NOP с ненулевым N (её ошибку видно
+ * на выходе); у OUT тоже N ≠ 0 — переход или запись в A по ошибке видны. 0: LDI A5; 1: ADDI 5A (FF);
+ * 2: OUT; 3: ADDI 01 (00 — перенос теряется); 4: OUT; 5: ADDI FE; 6: NOP; 7: OUT; 8: LDI 5A; 9: OUT;
+ * 10: JMP 1; дальше — NOP.
+ */
+export const DEC_PROGRAM = {
+  op: [0x10, 0x40, 0x80, 0x40, 0x80, 0x40, 0x00, 0x80, 0x10, 0x80, 0x90, 0, 0, 0, 0, 0],
+  n: [0xa5, 0x5a, 0x00, 0x01, 0x0d, 0xfe, 0x33, 0x00, 0x5a, 0x00, 0x01, 0, 0, 0, 0, 0],
+};
+
+/** Проверка «Декодера команд»: программа в двух ПЗУ, EEPROM на месте, потом шаги процессора (микрокод — какой угодно). */
+function decCheck(scene: Scene): LessonStep[] {
+  const roms = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === PROM_ID);
+  const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+  const words = (c: (typeof roms)[number]) => DEC_PROGRAM.op.map((_, a) => promWord(c.data, a));
+  const is = (c: (typeof roms)[number], want: number[]) => want.every((w, a) => words(c)[a] === w);
+  if (!scene.components.some((c) => c.type === "chip" && c.def === EEPROM_ID)) return [{ text: "На плате EEPROM AT28C256 — декодер команд", ok: false }];
+  if (roms.length < 2) return [{ text: "На плате два ПЗУ 74S288: одно — коды операций, другое — числа", ok: false }];
+  const opRom = roms.find((c) => is(c, DEC_PROGRAM.op));
+  const nRom = roms.find((c) => c !== opRom && is(c, DEC_PROGRAM.n));
+  if (!nRom || !opRom) {
+    const show = (c: (typeof roms)[number]) => `${c.id}: ${words(c).map((w, a) => `${a} → ${hex(w)}`).join(", ")}`;
+    return [{ text: `В ПЗУ — программа из описания (${!opRom ? "не нашлось ПЗУ с кодами операций" : "не нашлось ПЗУ с числами"}): сейчас ${roms.map(show).join("; ")}`, ok: false }];
+  }
+  return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2Emulate(DEC_PROGRAM, k), hex)];
+}
+
 // ─── Процессор 32 бит: восемь модулей «Срез», число N — 4 байта в четырёх ПЗУ ─────
 
 /** Выход OUT0…OUT31 — площадки J6…J37. */
@@ -988,6 +1062,29 @@ export const PROJECTS: Lesson[] = [
     ],
     start: () => cpuBench("proj-cpu8m", CPU8_BOARD),
     check: cpu8Check,
+  },
+  {
+    id: "proj-dec",
+    project: true,
+    after: "proj-cpu8m",
+    title: "Декодер команд",
+    about:
+      "Восьмиразрядный процессор с настоящими командами вместо битов управления. Команда — 16 бит по одному адресу в двух ПЗУ 74S288: в одном — код операции (старшая тетрада байта, младшая — 0), в другом — число N. Коды: 0 — NOP (ничего не делать), 1 — LDI (A ← N), 4 — ADDI (A ← A + N, перенос за 255 теряется), 8 — OUT (вывести A), 9 — JMP (перейти на адрес N mod 16); остальные коды в программе не встречаются. Каждая команда — за один такт CLK, по тому, что было до фронта. Какие сигналы схемы включить для какого кода, решает декодер — EEPROM AT28C256: код операции — её адрес, байт по этому адресу — сигналы управления; таблицу вписываете вы. Числа — на двух ваших модулях «Срез». Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT7 — J6…J13. Программа проверки — коды: 0 → 10, 1 → 40, 2 → 80, 3 → 40, 4 → 80, 5 → 40, 6 → 00, 7 → 80, 8 → 10, 9 → 80, 10 → 90, с 11 по 15 — 00; числа: 0 → A5, 1 → 5A, 2 → 00, 3 → 01, 4 → 0D, 5 → FE, 6 → 33, 7 → 00, 8 → 5A, 9 → 00, 10 → 01, остальные — 00. Проверка сверяет ПЗУ (EEPROM — нет: таблица ваша), смотрит висящие входы и медь, жмёт RST, 24 раза CLK и RST посреди работы. Выход — в шестнадцатеричном виде.",
+    hints: [
+      "Выпишите для каждой из пяти команд, что должно случиться по такту: пишется ли A и что именно, меняется ли выход, грузится ли счётчик команд. Сколько получилось разных сигналов — и сколько бит в байте EEPROM?",
+      "Разрешения записи у модуля и загрузка счётчика — активным нулём. Нужен ли инвертор, если байт в таблице можно вписать любой? И что сделает команда, если её ячейку оставить пустой?",
+    ],
+    kit: [
+      chip("cnt161"),
+      { part: "other", type: "chip", tool: `chip:${PROM_ID}`, preset: {}, match: { def: PROM_ID }, label: "ПЗУ 74S288", count: 2 },
+      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 1 },
+      chip("slice4", 2),
+      chip("not", 1),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 8 },
+      { part: "resistor", ohms: 1000, count: 8 },
+    ],
+    start: () => cpuBench("proj-dec", CPU8_BOARD),
+    check: decCheck,
   },
   {
     id: "proj-cpu32",
