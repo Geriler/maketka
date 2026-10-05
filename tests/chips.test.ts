@@ -204,11 +204,12 @@ describe("свои микросхемы", () => {
   it("вложенная микросхема: делитель, поставленный на корпус другой микросхемы, работает; описания собираются рекурсивно", () => {
     const d = divider();
     // Делитель DIP-4 на поле корпуса DIP-4: выводы 1–2 в ряду D, 3–4 обратно в ряду A
+    // Соединения — проводами: дорожки наискось задели бы чужие площадки и замкнули цепи
     const inner = scene(
       [chipOf("D1", d, on("k:D1", "k:D2", "k:A2", "k:A1"))],
-      [],
+      [[hole("k:1"), hole("k:D1")], [hole("k:2"), hole("k:D2")], [hole("k:3"), hole("k:A2")]],
       [box(4, { 1: "vcc", 2: "out", 3: "gnd" })],
-      [["k:1", "k:D1"], ["k:2", "k:D2"], ["k:3", "k:A2"]],
+      [],
       { [d.id]: d },
     );
     expect(packageProblems(inner)).toEqual([]);
@@ -229,11 +230,11 @@ describe("свои микросхемы", () => {
     type Id = keyof typeof kinds;
     const m = (id: Id): Component => ({ id, type: "mosfet", kind: kinds[id], placement: on(...[1, 2, 3].map((c) => `k:${rows[id]}${c}`)) });
     const at = (id: Id, r: "G" | "D" | "S") => `k:${rows[id]}${mosfetPin(kinds[id], r) + 1}`;
+    // Соединения — проводами: дорожки звездой от выводов задели бы чужие площадки
     const inner = scene(
       (Object.keys(kinds) as Id[]).map(m),
-      [],
-      [box(6, { 1: ["in", "A"], 2: ["in", "B"], 3: "gnd", 4: ["out", "Y"], 5: "vcc" })],
-      [
+      ([
+
         ["k:5", at("VT1", "S")],
         ["k:5", at("VT2", "S")],
         ["k:4", at("VT1", "D")],
@@ -245,7 +246,8 @@ describe("свои микросхемы", () => {
         ["k:1", at("VT3", "G")],
         ["k:2", at("VT2", "G")],
         ["k:2", at("VT4", "G")],
-      ],
+      ] as [string, string][]).map(([a, b]): [Endpoint, Endpoint] => [hole(a), hole(b)]),
+      [box(6, { 1: ["in", "A"], 2: ["in", "B"], 3: "gnd", 4: ["out", "Y"], 5: "vcc" })],
     );
     expect(packageProblems(inner)).toEqual([]);
     const d = packageChip(inner, "Мой NAND", "nand", 1);

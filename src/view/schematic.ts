@@ -8,7 +8,7 @@
  * Пересечение линий без точки — не соединение, точка — соединение.
  */
 
-import { traceNodes } from "../model/copper";
+import { copperContacts, traceNodes } from "../model/copper";
 import { HOLE_BY_ID, chipPinHole, chipPinName } from "../model/breadboard";
 import { PIN_ROLES } from "../chips/roles";
 import type { Component, Pin, Scene, SchematicLayout } from "../model/types";
@@ -55,6 +55,8 @@ export function buildNetlist(scene: Scene): Netlist {
     const [a, b] = traceNodes(t);
     union(a, b);
   }
+  // Медь, задевшая чужую медь, замыкает цепи — как на настоящей плате (и в упакованной микросхеме)
+  for (const k of copperContacts(scene.traces ?? [])) union(k.a, k.b);
   const index = new Map<string, number>();
   const nets: string[][] = [];
   const pins = new Map<string, number[]>();

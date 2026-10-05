@@ -3,7 +3,8 @@
  * истинности. Без DOM — годится и для приложения, и для тестов.
  */
 
-import { BOARDS, applyBoards, newChipBoard, type BoardSpec } from "../model/breadboard";
+import { BOARDS, applyBoards, holeLabel, newChipBoard, type BoardSpec } from "../model/breadboard";
+import { foreignContacts } from "../model/copper";
 import { TRANSISTORS, mosfetPin, type Chip, type ChipDef, type Component, type Endpoint, type MosfetRole, type Scene, type TransistorKind } from "../model/types";
 import { packageChip, packageProblems, chipInner } from "../chips/package";
 import { chipsUsed } from "../chips/registry";
@@ -1037,7 +1038,9 @@ function oscSteps(def: ChipDef, level: Level, chips: Record<string, ChipDef>): {
 
 /** Проверить сборку уровня: корпус, набор, таблица истинности. */
 export function checkLevel(level: Level, scene: Scene, chips: Record<string, ChipDef>, id = `career:${level.id}`): CheckResult {
-  const problems = [...packageProblems(scene), ...kitProblems(level, scene)];
+  // Медь, задевшая чужую, замыкает цепи: сказать прямо, где (упаковка эти замыкания тоже учтёт)
+  const shorts = foreignContacts(scene).map((k) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`);
+  const problems = [...packageProblems(scene), ...kitProblems(level, scene), ...(shorts.length ? [`Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}.`] : [])];
   if (problems.length) return { ok: false, problems, rows: [] };
   const def = packageChip(scene, level.part, id);
   def.scene.chips = { ...chipsUsed(scene), ...(scene.chips ?? {}) };
