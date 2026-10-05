@@ -5,7 +5,7 @@ import type { ChipDef, Component, Endpoint, Scene } from "../src/model/types";
 import { referenceChips } from "../src/career/build";
 import { memoryChips, PROM_ID } from "../src/chips/memory";
 import { packageChip } from "../src/chips/package";
-import { CPU_PINS, CPU8_OUT, CPU8_PROGRAM, PROJECTS } from "../src/career/projects";
+import { CPU_PINS, CPU8_OUT, CPU8_PROGRAM, CPU32_OUT, CPU32_PROGRAM, PROJECTS, cpu32Byte } from "../src/career/projects";
 
 setLibrary([]);
 const refs = [...referenceChips(), ...memoryChips()];
@@ -60,8 +60,11 @@ export function cpuOfModules(def: ChipDef, W = 2, project = "proj-cpu8", mutate:
   const plus: Endpoint = { comp: "G1", pin: 1 }, minus: Endpoint = { comp: "G1", pin: 0 };
   const CLK: Endpoint = { hole: CPU_PINS.clk }, RST: Endpoint = { hole: CPU_PINS.rst };
   const romsN = Math.max(1, W / 2);
-  const comps: Component[] = [chip("PC", "ref:hc161"), chip("RC", PROM_ID, CPU8_PROGRAM.op), ...["N1", "N2", "N3", "N4"].map((id) => chip(id, "ref:not-cmos"))];
-  for (let r = 0; r < romsN; r++) comps.push(chip(`RN${r}`, PROM_ID, CPU8_PROGRAM.n));
+  // 8 модулей — 32-битный: байты числа по своим ПЗУ, выход — все 32 разряда; иначе — как у 8-битного
+  const wide = W === 8;
+  const outs = wide ? CPU32_OUT : CPU8_OUT;
+  const comps: Component[] = [chip("PC", "ref:hc161"), chip("RC", PROM_ID, (wide ? CPU32_PROGRAM : CPU8_PROGRAM).op), ...["N1", "N2", "N3", "N4"].map((id) => chip(id, "ref:not-cmos"))];
+  for (let r = 0; r < romsN; r++) comps.push(chip(`RN${r}`, PROM_ID, wide ? cpu32Byte(r) : CPU8_PROGRAM.n));
   const w: [Endpoint, Endpoint][] = [];
   for (const c of comps) if (c.id.startsWith("N")) w.push([plus, P(c.id, 5)], [minus, P(c.id, 3)]); else w.push([plus, P(c.id, 16)], [minus, P(c.id, 8)]);
   const q = [1, 2, 3, 4, 5, 6, 7, 9];
@@ -79,7 +82,7 @@ export function cpuOfModules(def: ChipDef, W = 2, project = "proj-cpu8", mutate:
     comps.push({ id, type: "chip", def: def.id, name: def.name, package: def.package, pins: def.pins, placement: f } as Component);
     const outer: Record<number, Endpoint> = { 5: P("RC", 5), 6: CLK, 7: RST, 8: P("N3", 4), 9: P("N4", 4), 10: minus, 20: plus };
     [0, 1, 2, 3].forEach((k) => (outer[k + 1] = nbit(4 * s + k)));
-    [0, 1, 2, 3].forEach((k) => { if (4 * s + k < 8) outer[13 + k] = { hole: CPU8_OUT[4 * s + k] }; });
+    [0, 1, 2, 3].forEach((k) => { if (4 * s + k < outs.length) outer[13 + k] = { hole: outs[4 * s + k] }; });
     if (s === 0) outer[11] = minus;
     else w.push([P(`M${s - 1}`, 12), P(id, 11)]);
     for (const [n, e] of Object.entries(outer)) w.push([e, P(id, +n)]);

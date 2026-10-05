@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyBoards, boardSize, chipField, chipPinAt, footprintPads, packageName, parsePackage, pinOffsets, seatProblem } from "../src/model/breadboard";
 import { packageProblems } from "../src/chips/package";
-import { CPU8_OUT, CPU8_PROGRAM, cpu8Emulate, cpuRun } from "../src/career/projects";
+import { CPU8_OUT, CPU8_PROGRAM, CPU32_OUT, CPU32_PROGRAM, cpu8Emulate, cpu32Emulate, cpuRun } from "../src/career/projects";
 import { schematicSvg } from "../src/view/schematic";
 import { Simulation } from "../src/sim/simulation";
 import { cpuOfModules, sliceCase, sliceModule } from "./module-build";
@@ -51,11 +51,12 @@ describe("модуль: своя плата на штыревом разъёме
     expect(r.again).toEqual(cpu8Emulate(CPU8_PROGRAM, 6));
     expect([...r.hurt]).toEqual([]);
   }, 120000);
-  it("32 бита из восьми модулей: младший байт — как у 8-битного (перенос идёт через все срезы)", () => {
+  it("32 бита из восьми модулей: все 32 разряда — как у эмулятора (FFFFFFFF + 1 — перенос через все срезы)", () => {
     const def = sliceModule();
     const t0 = performance.now();
-    const r = cpuRun(cpuOfModules(def, 8), CPU8_OUT);
-    expect(r.outs).toEqual(cpu8Emulate(CPU8_PROGRAM, 24));
+    const r = cpuRun(cpuOfModules(def, 8), CPU32_OUT);
+    expect(r.outs).toEqual(cpu32Emulate(CPU32_PROGRAM, 24));
+    expect(r.outs).toContain(0xffffffff);
     expect(performance.now() - t0).toBeLessThan(20000);
   }, 120000);
 });

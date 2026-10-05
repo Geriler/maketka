@@ -143,6 +143,7 @@ const PLACE: Record<string, [number, number]> = {
   "proj-cpu8": [10, 6],
   "proj-boot": [10, 7.2],
   "proj-cpu8m": [10, 8.4],
+  "proj-cpu32": [10, 9.6],
   slice: [7, 3.6],
 };
 /**

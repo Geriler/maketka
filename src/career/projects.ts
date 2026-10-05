@@ -394,6 +394,63 @@ export function cpu8Emulate(prog: { n: number[]; op: number[] }, clocks: number)
   return outs;
 }
 
+// ─── Процессор 32 бит: восемь модулей «Срез», число N — 4 байта в четырёх ПЗУ ─────
+
+/** Выход OUT0…OUT31 — площадки J6…J37. */
+export const CPU32_OUT = Array.from({ length: 32 }, (_, k) => `s:J${6 + k}`);
+/** Плата 32-битного, шагов: восемь модулей на разъёмах, пять ПЗУ и 32 вывода у края. */
+export const CPU32_BOARD = { cols: 96, rows: 56 };
+
+/**
+ * Программа 32-битного — та же, что у 8-битного, только числа 32-битные: в A грузятся A5A5A5A5 и
+ * 5A5A5A5A (каждый бит — и ноль, и единица), A5A5A5A5 + 5A5A5A5A = FFFFFFFF, + 1 — перенос через все
+ * 32 разряда и восемь модулей, + FFFFFFFE. Команды — как у 8-битного.
+ */
+export const CPU32_PROGRAM = {
+  n: [0xa5a5a5a5, 0x5a5a5a5a, 0x01, 0xfffffffe, 0x5a5a5a5a, 0x0f, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0x01],
+  op: CPU8_PROGRAM.op,
+};
+/** Байт k числа N по адресам — что лежит в k-м ПЗУ чисел. */
+export const cpu32Byte = (k: number) => CPU32_PROGRAM.n.map((w) => Math.floor(w / 2 ** (8 * k)) % 256);
+
+/** Что на выходе 32-битного после каждого такта (от сброса). */
+export function cpu32Emulate(prog: { n: number[]; op: number[] }, clocks: number): number[] {
+  let pc = 0, a = 0, out = 0;
+  const outs: number[] = [];
+  for (let i = 0; i < clocks; i++) {
+    const w = prog.op[pc] ?? 0, n = prog.n[pc] ?? 0;
+    const next = w & CPU_OPS.add ? (a + n) % 2 ** 32 : n;
+    if (w & CPU_OPS.out) out = a;
+    if (w & CPU_OPS.wa) a = next;
+    pc = w & CPU_OPS.jmp ? n % 16 : (pc + 1) & 15;
+    outs.push(out);
+  }
+  return outs;
+}
+
+/** Проверка 32-битного: пять ПЗУ — команды и четыре байта числа, потом шаги процессора. */
+function cpu32Check(scene: Scene): LessonStep[] {
+  const roms = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === PROM_ID);
+  const hex2 = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+  const words = (c: (typeof roms)[number]) => CPU32_PROGRAM.op.map((_, a) => promWord(c.data, a));
+  const want: [string, number[]][] = [["команды", CPU32_PROGRAM.op], ...[0, 1, 2, 3].map((k): [string, number[]] => [`байт ${k} числа`, cpu32Byte(k)])];
+  if (roms.length < 5) return [{ text: `На столе пять ПЗУ 74S288: команды и четыре байта числа — сейчас ${roms.length}`, ok: false }];
+  // Каждому содержимому — своё ПЗУ (у байтов 1…3 содержимое одинаковое: годится любое из них)
+  const free = [...roms];
+  const lost = want.filter(([, w]) => {
+    const i = free.findIndex((c) => w.every((x, a) => words(c)[a] === x));
+    if (i < 0) return true;
+    free.splice(i, 1);
+    return false;
+  });
+  if (lost.length) {
+    const show = (c: (typeof roms)[number]) => `${c.id}: ${words(c).map(hex2).join(" ")}`;
+    return [{ text: `В ПЗУ — программа из описания (не нашлось: ${lost.map(([l]) => l).join(", ")}): сейчас ${roms.map(show).join("; ")}`, ok: false }];
+  }
+  const hex = (w: number) => w.toString(16).toUpperCase().padStart(8, "0");
+  return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU32_OUT, (k) => cpu32Emulate(CPU32_PROGRAM, k), hex)];
+}
+
 /** Проверка 8-битного (из микросхем или из модулей): программа в двух ПЗУ, потом шаги процессора. */
 function cpu8Check(scene: Scene): LessonStep[] {
   const roms = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === PROM_ID);
@@ -454,7 +511,8 @@ export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out) 
   const r = runner(scene);
   const g1 = r.sim.scene.components.find((c) => c.id === "G1")!;
   const v = (hole: string) => (r.sim.solution.voltage.get(HOLE_BY_ID.get(hole)!.node) ?? 0) - (r.sim.solution.voltage.get(pinNode(g1, 0)) ?? 0);
-  const out = () => outPins.reduce((m, h, k) => m | (v(h) > 2.5 ? 1 << k : 0), 0);
+  // Число — сложением, а не «|»: у 32-битного старший разряд «1 << 31» стал бы отрицательным
+  const out = () => outPins.reduce((m, h, k) => m + (v(h) > 2.5 ? 2 ** k : 0), 0);
   // В схеме из одних моделей нет ничего, что меняется со временем, — шаг её не пересчитывает;
   // нажатие меняет схему, поэтому после него — пересчёт (как делает стол, когда жмут кнопку)
   const press = (id: string) => {
@@ -930,6 +988,28 @@ export const PROJECTS: Lesson[] = [
     ],
     start: () => cpuBench("proj-cpu8m", CPU8_BOARD),
     check: cpu8Check,
+  },
+  {
+    id: "proj-cpu32",
+    project: true,
+    after: "proj-cpu8m",
+    title: "Процессор 32 бит",
+    about:
+      "Тот же процессор, но числа — тридцатидвухразрядные (0…4 294 967 295): регистр A, сумматор и выход по 32 бита, перенос за старший разряд теряется. Всё, что работает с числами, — на восьми ваших модулях «Срез». Команда — 40 бит по одному адресу в пяти ПЗУ 74S288: в четырёх — число N по байтам (байт 0 — младший), в пятом — что делать, биты 7…4 как у восьмиразрядного (бит 7 — перейти на адрес N mod 16, бит 6 — вывести A, бит 5 — записать в A, бит 4 — записывается A + N, иначе само N), младшие — 0. Адресов по-прежнему 16. Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT31 — площадки J6…J37 (OUT0 — младший). Программа проверки — числа N: 0 → A5A5A5A5, 1 → 5A5A5A5A, 2 → 00000001, 3 → FFFFFFFE, 4 → 5A5A5A5A, 5 → 0000000F, 15 → 00000001, остальные — 0 (по байтам: в ПЗУ байта 0 — A5, 5A, 01, FE, 5A, 0F, …, 01; в ПЗУ байтов 1, 2 и 3 — A5, 5A, 00, FF, 5A, 00, …, 00); команды — как у восьмиразрядного: 0 → 20, 1 → 30, 2 → 70, 3 → 30, 4 → 60, 5 → 80, 15 → C0, остальные — 00. Проверка та же: висящие входы, медь, RST, 24 такта CLK, RST посреди работы. Выход — в шестнадцатеричном виде.",
+    hints: [
+      "Восемь модулей — восемь одинаковых кусков по 4 бита. Какие выводы разъёма у всех восьми общие, а какие у каждого свои? Сколько проводов уходит к каждому ПЗУ чисел?",
+      "Перенос идёт по цепочке от младшего модуля к старшему. Сколько ему нужно пройти, чтобы FFFFFFFF + 1 стало нулём, — и что будет, если где-то в цепочке он оборвётся?",
+    ],
+    kit: [
+      chip("cnt161"),
+      { part: "other", type: "chip", tool: `chip:${PROM_ID}`, preset: {}, match: { def: PROM_ID }, label: "ПЗУ 74S288", count: 5 },
+      chip("slice4", 8),
+      chip("not", 4),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 32 },
+      { part: "resistor", ohms: 1000, count: 32 },
+    ],
+    start: () => cpuBench("proj-cpu32", CPU32_BOARD),
+    check: cpu32Check,
   },
   {
     id: "proj-boot",
