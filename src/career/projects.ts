@@ -46,8 +46,8 @@ export function shownDigit(disp: Extract<Component, { type: "display" }>, sim: S
 const worstSegment = (disp: Extract<Component, { type: "display" }>, sim: Simulation) => Math.max(0, ...DISPLAY_SEGMENTS.map((_, k) => segmentCurrent(disp, sim, k)));
 
 /** Расчёт стола шагами dt: что сгорело или перегружено. */
-function runner(scene: Scene) {
-  const sim = new Simulation(JSON.parse(JSON.stringify(scene)) as Scene);
+function runner(scene: Scene, options: { strictModels?: boolean } = {}) {
+  const sim = new Simulation(JSON.parse(JSON.stringify(scene)) as Scene, undefined, options);
   const hurt = new Set<string>();
   let peak = 0;
   const disp = of(sim.scene, "display")[0];
@@ -419,6 +419,8 @@ export function m2Emulate(prog: { op: number[]; n: number[] }, clocks: number, b
   const outs: number[] = [];
   for (let i = 0; i < clocks; i++) {
     const code = (prog.op[pc] ?? 0) >> 4, n = prog.n[pc] ?? 0;
+    // Адрес в ОЗУ — младший байт N
+    const at = n % 256;
     let next = (pc + 1) % pcMod;
     const arith = (b: number, sub: boolean) => {
       const r = sub ? a + (mod - 1 - b) + 1 : a + b;
@@ -427,12 +429,12 @@ export function m2Emulate(prog: { op: number[]; n: number[] }, clocks: number, b
     };
     switch (code) {
       case M2.LDI: a = n; break;
-      case M2.LD: a = ram.get(n) ?? 0; break;
-      case M2.ST: ram.set(n, a); break;
+      case M2.LD: a = ram.get(at) ?? 0; break;
+      case M2.ST: ram.set(at, a); break;
       case M2.ADDI: arith(n, false); break;
       case M2.SUBI: arith(n, true); break;
-      case M2.ADD: arith(ram.get(n) ?? 0, false); break;
-      case M2.SUB: arith(ram.get(n) ?? 0, true); break;
+      case M2.ADD: arith(ram.get(at) ?? 0, false); break;
+      case M2.SUB: arith(ram.get(at) ?? 0, true); break;
       case M2.OUT: out = a; break;
       case M2.JMP: next = n % pcMod; break;
       case M2.JC: if (c) next = n % pcMod; break;
@@ -571,6 +573,68 @@ function longCheck(scene: Scene): LessonStep[] {
   return [{ text: "В EEPROM — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2Emulate(LONG_PROGRAM, k, 8, 8), hex, MEM_FILL, LONG_CLOCKS)];
 }
 
+/**
+ * Программа «М2 на 32 бита»: A5A5A5A5 и 5A5A5A5A в ОЗУ (каждый бит всех четырёх байтов — и ноль, и
+ * единица), ADD — FFFFFFFF, ADDI 1 — ноль с переносом через все 32 разряда (JC и JZ переходят),
+ * SUB — заём через все разряды (A5A5A5A6), JNZ, SUBI до нуля, JZ, стоп; за HLT — LDI 77 и OUT.
+ */
+const M32_CODE: [number, number, number][] = [
+  [0x00, 0x10, 0xa5a5a5a5],
+  [0x01, 0x30, 0xa5],
+  [0x02, 0x10, 0x5a5a5a5a],
+  [0x03, 0x30, 0x5a],
+  [0x04, 0x90, 0xab],
+  [0xab, 0x20, 0xa5],
+  [0xac, 0x60, 0x5a],
+  [0xad, 0x80, 0x0],
+  [0xae, 0x40, 0x1],
+  [0xaf, 0xa0, 0xb1],
+  [0xb0, 0xf0, 0x0],
+  [0xb1, 0xb0, 0xb3],
+  [0xb2, 0xf0, 0x0],
+  [0xb3, 0x70, 0x5a],
+  [0xb4, 0x80, 0x0],
+  [0xb5, 0xc0, 0x5a],
+  [0xb6, 0xf0, 0x0],
+  [0x5a, 0x50, 0xa5a5a5a6],
+  [0x5b, 0xb0, 0x5d],
+  [0x5c, 0xf0, 0x0],
+  [0x5d, 0x80, 0x0],
+  [0x5e, 0xf0, 0x2],
+  [0x5f, 0x10, 0x77],
+  [0x60, 0x80, 0x0],
+];
+export const M32_PROGRAM = {
+  op: Array.from({ length: 256 }, (_, a) => M32_CODE.find(([x]) => x === a)?.[1] ?? 0),
+  n: Array.from({ length: 256 }, (_, a) => M32_CODE.find(([x]) => x === a)?.[2] ?? 0),
+};
+/** Тактов в проверке «М2 на 32 бита». */
+export const M32_CLOCKS = 24;
+
+/** Проверка «М2 на 32 бита»: EEPROM кодов, четыре — байтов числа, шестая — декодер; ОЗУ — четыре. */
+function m32Check(scene: Scene): LessonStep[] {
+  const ee = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === EEPROM_ID);
+  const hex2 = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+  const rams = scene.components.filter((c) => c.type === "chip" && c.def === SRAM_ID).length;
+  if (rams < 4) return [{ text: `На плате четыре ОЗУ HM62256B — по байту данных: сейчас ${rams}`, ok: false }];
+  if (ee.length < 6) return [{ text: `На плате шесть EEPROM AT28C256: коды, четыре байта числа и декодер — сейчас ${ee.length}`, ok: false }];
+  const byte = (k: number) => M32_PROGRAM.n.map((w) => Math.floor(w / 2 ** (8 * k)) % 256);
+  const want: [string, number[]][] = [["коды операций", M32_PROGRAM.op], ...[0, 1, 2, 3].map((k): [string, number[]] => [`байт ${k} числа`, byte(k)])];
+  const free = [...ee];
+  const lost = want.filter(([, w]) => {
+    const i = free.findIndex((c) => w.every((x, a) => eepromWord(c.data, a) === x));
+    if (i < 0) return true;
+    free.splice(i, 1);
+    return false;
+  });
+  if (lost.length) {
+    const show = (c: (typeof ee)[number]) => `${c.id}: ${M32_CODE.map(([a]) => `${hex2(a)} → ${hex2(eepromWord(c.data, a))}`).join(", ")}`;
+    return [{ text: `В EEPROM — программа из описания (не нашлось: ${lost.map(([l]) => l).join(", ")}): сейчас ${ee.map(show).join("; ")}`, ok: false }];
+  }
+  const hex = (w: number) => w.toString(16).toUpperCase().padStart(8, "0");
+  return [{ text: "В EEPROM — программа из описания", ok: true }, ...cpuSteps(scene, CPU32_OUT, (k) => m2Emulate(M32_PROGRAM, k, 32, 8), hex, MEM_FILL, M32_CLOCKS)];
+}
+
 // ─── Процессор 32 бит: восемь модулей «Срез», число N — 4 байта в четырёх ПЗУ ─────
 
 /** Выход OUT0…OUT31 — площадки J6…J37. */
@@ -684,8 +748,19 @@ function cpuBench(id: string, board = CPU_BOARD): Scene {
 export const CPU_CLOCKS = 24;
 
 /** Прогнать процессор: сброс, такты по одному, после каждого — что на выходе; потом сброс посреди работы. */
+/**
+ * Сколько прогону процессора можно идти, мс: исправная 32-битная машина укладывается в секунды, а
+ * схема с висящим входом бывает «не определена» насквозь и считается минутами — тогда прервать.
+ */
+export const RUN_BUDGET_MS = 15000;
+
 export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out, ramFill?: number, clocks = CPU_CLOCKS) {
-  const r = runner(scene);
+  const deadline = performance.now() + RUN_BUDGET_MS;
+  let aborted = false;
+  const late = () => (aborted ||= performance.now() > deadline);
+  // Микросхемы — моделями всё время: на переходах (включение, RST) «неопределённые» выходы на миг
+  // упирают блок питания в предел тока, и раскрытие в транзисторы сделало бы прогон минутным
+  const r = runner(scene, { strictModels: true });
   const find = netOf(r.sim.scene);
   const fights = new Set<string>();
   const g1 = r.sim.scene.components.find((c) => c.id === "G1")!;
@@ -714,18 +789,18 @@ export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out, 
   press("SB2");
   const afterReset = out();
   const outs: number[] = [];
-  for (let i = 0; i < clocks; i++) {
+  for (let i = 0; i < clocks && !late(); i++) {
     press("SB1");
     outs.push(out());
   }
   // Сброс посреди работы — и снова с начала
-  press("SB2");
   const again: number[] = [];
-  for (let i = 0; i < 6; i++) {
+  if (!late()) press("SB2");
+  for (let i = 0; i < 6 && !late(); i++) {
     press("SB1");
     again.push(out());
   }
-  return { afterReset, outs, again, fights: [...fights], hurt: r.hurt };
+  return { afterReset, outs, again, fights: [...fights], hurt: r.hurt, aborted };
 }
 
 const chip = (func: LogicFunc, count = 1): KitItem => ({ part: "chip", func, count });
@@ -806,12 +881,32 @@ export function bootRun(scene: Scene) {
  * Шаги проверки процессора после программы: висящие входы, медь, сброс, такт за тактом, сброс
  * посреди работы, перегрев. want(k) — что должно быть на выходе после k тактов (эмулятор).
  */
+/**
+ * Микросхемы без питания или общего: прогон с ними не запускать — работают как попало, а модель
+ * у них «вне проверенного питания» и считается по начинке (у 74HC157 — минуты вместо секунд).
+ */
+function noPowerSteps(floating: string[]): LessonStep[] | undefined {
+  const cut = floating.filter((x) => /\((питание|общий)\)$/.test(x));
+  if (!cut.length) return undefined;
+  return [
+    { text: `Выводы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}`, ok: false },
+    { text: `Прогон не запускался: у микросхем не подключено питание или общий (${cut.slice(0, 4).join(", ")}${cut.length > 4 ? ` и ещё ${cut.length - 4}` : ""}) — без него схема работает как попало`, ok: false },
+  ];
+}
+
 function cpuSteps(scene: Scene, outPins: readonly string[], want: (clocks: number) => number[], fmt: (v: number) => string, ramFill?: number, clocks = CPU_CLOCKS): LessonStep[] {
-  const { afterReset, outs, again, fights, hurt } = cpuRun(scene, outPins, ramFill, clocks);
+  const cut = noPowerSteps(floatingInputs(scene));
+  if (cut) return cut;
+  const { afterReset, outs, again, fights, hurt, aborted } = cpuRun(scene, outPins, ramFill, clocks);
   const w = want(clocks);
-  const bad = outs.findIndex((o, i) => o !== w[i]);
-  const wAgain = want(again.length);
-  const badAgain = again.findIndex((o, i) => o !== wAgain[i]);
+  // Первый такт, где выход не тот; прогон прерван раньше — первый недосчитанный
+  const firstBad = (got: number[], need: number[]) => {
+    const i = got.findIndex((o, k) => o !== need[k]);
+    return i >= 0 ? i : got.length < need.length ? got.length : -1;
+  };
+  const bad = firstBad(outs, w);
+  const wAgain = want(6);
+  const badAgain = firstBad(again, wAgain);
   const floating = floatingInputs(scene);
   const shorts = foreignContacts(scene);
   const shortName = (k: (typeof shorts)[number]) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`;
@@ -824,6 +919,7 @@ function cpuSteps(scene: Scene, outPins: readonly string[], want: (clocks: numbe
     { text: floating.length ? `Выводы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы и выводы питания микросхем куда-то подключены", ok: !floating.length },
     { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
     { text: fights.length ? `Две микросхемы выводят на одну цепь разом: ${fights.slice(0, 3).join("; ")}${fights.length > 3 ? ` и ещё ${fights.length - 3}` : ""}` : "На каждую цепь выводит только одна микросхема", ok: !fights.length },
+    ...(aborted ? [{ text: `Прогон прерван: за ${RUN_BUDGET_MS / 1000} с успело только ${outs.length + again.length} тактов из ${clocks + 6} — так бывает, когда вход висит в воздухе или выход «не определён» и это растекается по схеме`, ok: false }] : []),
     { text: `После RST на выходе 0 — сейчас ${fmt(afterReset)}`, ok: afterReset === 0 },
     { text: `Такт за тактом на выходе: ${list(outs)}${bad >= 0 ? ` (на ${bad + 1}-м такте нужно ${fmt(w[bad])})` : ""}`, ok: bad < 0 },
     { text: `RST посреди работы — и снова с начала: ${list(again)}${badAgain >= 0 ? ` (нужно ${list(wAgain)})` : ""}`, ok: badAgain < 0 },
@@ -1292,6 +1388,36 @@ export const PROJECTS: Lesson[] = [
     check: longCheck,
   },
   {
+    id: "proj-m32",
+    project: true,
+    after: "proj-long",
+    title: "М2 на 32 бита",
+    about:
+      "Тот же процессор М2 с длинными программами, но числа — тридцатидвухразрядные: A, сложение и вычитание (флаг C — перенос за старший, 32-й разряд), выход и ячейки ОЗУ — по 32 бита. Число N в команде — 32 бита: по байту в четырёх EEPROM AT28C256 (байт 0 — младший), код операции — в пятой, декодер — в шестой. Адрес перехода и адрес в ОЗУ — младший байт N (0…255). ОЗУ — четыре HM62256B, по байту каждого числа; после включения в них мусор. JZ и JNZ смотрят, равны ли нулю все 32 разряда A. Команды и коды — как в «Длинных программах»: 0 NOP, 1 LDI, 2 LD, 3 ST, 4 ADDI, 5 SUBI, 6 ADD, 7 SUB, 8 OUT, 9 JMP, A JC, B JZ, C JNZ, F HLT. Числа — на восьми ваших модулях «Срез 2». Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT31 — J6…J37. Программа проверки (адрес → код и число N, остальные адреса пустые): 00 → 10 A5A5A5A5, 01 → 30 000000A5, 02 → 10 5A5A5A5A, 03 → 30 0000005A, 04 → 90 000000AB, AB → 20 000000A5, AC → 60 0000005A, AD → 80 00000000, AE → 40 00000001, AF → A0 000000B1, B0 → F0 00000000, B1 → B0 000000B3, B2 → F0 00000000, B3 → 70 0000005A, B4 → 80 00000000, B5 → C0 0000005A, B6 → F0 00000000, 5A → 50 A5A5A5A6, 5B → B0 0000005D, 5C → F0 00000000, 5D → 80 00000000, 5E → F0 00000002, 5F → 10 00000077, 60 → 80 00000000. Проверка сверяет программу, смотрит висящие входы и выводы питания, медь и спор на шине, жмёт RST, 24 раза CLK и RST посреди работы. Выход — в шестнадцатеричном виде.",
+    hints: [
+      "Что в «Длинных программах» было одно на 8 разрядов, а теперь нужно на каждый байт? И что так и остаётся одним на всю машину?",
+      "«A = 0» — теперь 32 разряда. Сколько двухвходовых вентилей нужно, чтобы свести их к одному сигналу, и как их выстроить, чтобы сигнал проходил через как можно меньше вентилей подряд?",
+    ],
+    kit: [
+      chip("cnt161", 2),
+      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 6 },
+      { part: "other", type: "chip", tool: `chip:${SRAM_ID}`, preset: { smd: true }, match: { def: SRAM_ID }, label: "ОЗУ HM62256B", count: 4 },
+      chip("slice4a", 8),
+      chip("mux4q", 8),
+      chip("buf8z", 4),
+      chip("xor", 32),
+      chip("or", 31),
+      chip("nor"),
+      chip("dffr"),
+      chip("mux"),
+      chip("not", 2),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 32 },
+      { part: "resistor", ohms: 1000, count: 32 },
+    ],
+    start: () => cpuBench("proj-m32", CPU32_BOARD),
+    check: m32Check,
+  },
+  {
     id: "proj-cpu32",
     project: true,
     after: "proj-cpu8m",
@@ -1344,6 +1470,8 @@ export const PROJECTS: Lesson[] = [
       const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
       const words = BOOT_PROGRAM.map((_, a) => eepromWord(ee?.data, a));
       if (!ee || !BOOT_PROGRAM.every((w, a) => words[a] === w)) return [{ text: ee ? `В EEPROM — программа из описания: сейчас ${words.map((w, a) => `${a} → ${hex(w)}`).join(", ")}` : "На плате EEPROM AT28C256", ok: false }];
+      const cut = noPowerSteps(floatingInputs(scene));
+      if (cut) return [{ text: "В EEPROM — программа из описания", ok: true }, ...cut];
       const { boot, outs, again, fights, hurt } = bootRun(scene);
       const want = cpuEmulate(BOOT_PROGRAM, CPU_CLOCKS);
       const bad = outs.findIndex((o, i) => o !== want[i]);

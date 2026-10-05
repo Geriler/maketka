@@ -53,7 +53,12 @@ export const psu: PartDef<PowerSupply> = {
     const br = sim.solution.branches.get(c.id)!;
     const mode = sim.psuMode.get(c.id) ?? "CV";
     const next = mode === "CV" ? (br.current > c.amps * (1 + 1e-9) ? "CC" : "CV") : br.voltage > c.volts * (1 + 1e-9) ? "CV" : "CC";
-    if (next === mode || shared.flips >= 8) return true;
+    // Свой счётчик переключений: общий в большой схеме выбирают модели микросхем, и блок застревал
+    // в CC с напряжением выше уставки — так настоящий блок не умеет
+    const psu = (shared.psu ??= new Map());
+    const n = psu.get(c.id) ?? 0;
+    if (next === mode || n >= 8) return true;
+    psu.set(c.id, n + 1);
     sim.psuMode.set(c.id, next);
     shared.flips++;
     return false;

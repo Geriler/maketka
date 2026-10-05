@@ -175,7 +175,11 @@ export const chip: PartDef<Chip> = {
     let zm = sim.junction.get(zkey) ?? 0;
     if (model.z && span > 0.5) {
       const lv = inputLevels(c, model, sim, sim.memory.get(`${c.id}:seq`) as ModelState | undefined);
-      if (lv.every((l) => l !== undefined)) zm = model.z(lv as boolean[]).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
+      // Неопределённые входы (данные ещё не установились), от которых отключение не зависит, ему не
+      // мешают: у шинного буфера оно решается одним O̅E̅ — при нулях и при единицах на них выйдет одно
+      const mask = (fill: boolean) => model.z!(lv.map((l) => l ?? fill)).reduce((m, b, k) => m | (b ? 1 << k : 0), 0);
+      if (lv.every((l) => l !== undefined)) zm = mask(false);
+      else if (mask(false) === mask(true)) zm = mask(false);
     }
     if (zm !== (sim.junction.get(zkey) ?? 0)) {
       sim.junction.set(zkey, zm);
