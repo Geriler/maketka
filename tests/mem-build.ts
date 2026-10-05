@@ -6,10 +6,11 @@
 import type { Component, Endpoint, Scene } from "../src/model/types";
 import { applyBoards } from "../src/model/breadboard";
 import { EEPROM_ID, PROM_ID, SRAM_ID } from "../src/chips/memory";
-import { CPU_PINS, CPU8_OUT, MEM_PROGRAM, PROJECTS } from "../src/career/projects";
+import { CPU_PINS, CPU8_OUT, LONG_PROGRAM, MEM_PROGRAM, PROJECTS } from "../src/career/projects";
 import { P, allChips } from "./module-build";
 
 export const proj = PROJECTS.find((p) => p.id === "proj-mem")!;
+export const projLong = PROJECTS.find((p) => p.id === "proj-long")!;
 const f = { mode: "free" as const, x: 0, z: 0, rot: 0 };
 const chip = (id: string, ref: string, data?: number[]): Component => {
   const d = allChips[ref];
@@ -35,20 +36,29 @@ const MUXC = [[2, 3, 4], [5, 6, 7], [11, 10, 9], [14, 13, 12]];
 /** 74HC244: бит k (0…7) — вход A, выход Y. */
 const BUF = [[2, 18], [4, 16], [6, 14], [8, 12], [17, 3], [15, 5], [13, 7], [11, 9]];
 
-export function mem(microcode: number[] = MICROCODE, mutate: (w: [Endpoint, Endpoint][]) => [Endpoint, Endpoint][] = (w) => w): Scene {
+/**
+ * long — «Длинные программы»: программа в двух EEPROM (PO — коды, PN — числа), счётчик команд —
+ * два 74HC161 (PC — младший, PH — старший, RCO → ENT), адрес программы — 8 разрядов.
+ */
+export function mem(microcode: number[] = MICROCODE, mutate: (w: [Endpoint, Endpoint][]) => [Endpoint, Endpoint][] = (w) => w, long = false): Scene {
   const plus: Endpoint = { comp: "G1", pin: 1 }, minus: Endpoint = { comp: "G1", pin: 0 };
   const CLK: Endpoint = { hole: CPU_PINS.clk }, RST: Endpoint = { hole: CPU_PINS.rst };
   const gates = ["N1", "N2", "O1", ...Array.from({ length: 6 }, (_, k) => `Z${k}`), "ZN", ...Array.from({ length: 8 }, (_, k) => `X${k}`)];
   const comps: Component[] = [
-    chip("PC", "ref:hc161"), chip("RO", PROM_ID, MEM_PROGRAM.op), chip("RN", PROM_ID, MEM_PROGRAM.n), chip("DE", EEPROM_ID, microcode), chip("RM", SRAM_ID),
+    chip("PC", "ref:hc161"),
+    ...(long ? [chip("PH", "ref:hc161"), chip("RO", EEPROM_ID, LONG_PROGRAM.op), chip("RN", EEPROM_ID, LONG_PROGRAM.n)] : [chip("RO", PROM_ID, MEM_PROGRAM.op), chip("RN", PROM_ID, MEM_PROGRAM.n)]),
+    chip("DE", EEPROM_ID, microcode), chip("RM", SRAM_ID),
     chip("BF", "ref:hc244"), chip("MA", "ref:hc157"), chip("MB", "ref:hc157"), chip("FC", "ref:dffr"), chip("MC", "ref:mux"),
     chip("N1", "ref:not-cmos"), chip("N2", "ref:not-cmos"), chip("O1", "ref:or"), ...Array.from({ length: 6 }, (_, k) => chip(`Z${k}`, "ref:or")), chip("ZN", "ref:nor-cmos"),
     ...Array.from({ length: 8 }, (_, k) => chip(`X${k}`, "ref:xor")),
     ...[0, 1].map((s): Component => ({ id: `M${s}`, type: "chip", def: "ref:slice2", name: "Срез 2", package: "SIP", pins: 24, placement: f }) as Component),
   ];
   const w: [Endpoint, Endpoint][] = [];
-  for (const id of ["PC", "RO", "RN", "MA", "MB"]) w.push([plus, P(id, 16)], [minus, P(id, 8)]);
-  for (const id of ["DE", "RM"]) w.push([plus, P(id, 28)], [minus, P(id, 14)]);
+  for (const id of long ? ["PC", "PH", "MA", "MB"] : ["PC", "RO", "RN", "MA", "MB"]) w.push([plus, P(id, 16)], [minus, P(id, 8)]);
+  for (const id of long ? ["DE", "RM", "RO", "RN"] : ["DE", "RM"]) w.push([plus, P(id, 28)], [minus, P(id, 14)]);
+  // Выходы программы: бит k числа и кода (у ПЗУ — Q, у EEPROM — I/O)
+  const nq = (k: number) => P("RN", long ? IO28[k] : Q[k]);
+  const oq = (k: number) => P("RO", long ? IO28[k] : Q[k]);
   w.push([plus, P("BF", 20)], [minus, P("BF", 10)]);
   for (const id of gates) w.push([plus, P(id, 5)], [minus, P(id, 3)]);
   for (const id of ["FC", "MC"]) w.push([plus, P(id, 5)], [minus, P(id, 2)]);
@@ -56,20 +66,30 @@ export function mem(microcode: number[] = MICROCODE, mutate: (w: [Endpoint, Endp
   const [nWA, nWO, SEL, nLD, SUB, CNT, MEM, nST] = io;
   // Счётчик команд
   w.push([CLK, P("PC", 2)], [RST, P("N1", 2)], [P("N1", 4), P("PC", 1)], [CNT, P("PC", 7)], [plus, P("PC", 10)], [nLD, P("PC", 9)]);
-  [3, 4, 5, 6].forEach((p, k) => w.push([P("RN", Q[k]), P("PC", p)]));
-  for (const r of ["RO", "RN"]) {
-    [14, 13, 12, 11].forEach((qp, k) => w.push([P("PC", qp), P(r, 10 + k)]));
-    w.push([minus, P(r, 14)], [minus, P(r, 15)]);
-  }
+  [3, 4, 5, 6].forEach((p, k) => w.push([nq(k), P("PC", p)]));
+  if (long) {
+    // Старший счётчик: считает, когда младший дошёл до 15 (RCO → ENT); загрузка и стоп — те же
+    w.push([CLK, P("PH", 2)], [P("N1", 4), P("PH", 1)], [CNT, P("PH", 7)], [P("PC", 15), P("PH", 10)], [nLD, P("PH", 9)]);
+    [3, 4, 5, 6].forEach((p, k) => w.push([nq(4 + k), P("PH", p)]));
+    for (const r of ["RO", "RN"]) {
+      [14, 13, 12, 11].forEach((qp, k) => w.push([P("PC", qp), P(r, ADDR28[k])], [P("PH", qp), P(r, ADDR28[4 + k])]));
+      for (const a of ADDR28.slice(8)) w.push([minus, P(r, a)]);
+      w.push([minus, P(r, 20)], [minus, P(r, 22)], [plus, P(r, 27)]);
+    }
+  } else
+    for (const r of ["RO", "RN"]) {
+      [14, 13, 12, 11].forEach((qp, k) => w.push([P("PC", qp), P(r, 10 + k)]));
+      w.push([minus, P(r, 14)], [minus, P(r, 15)]);
+    }
   // Декодер: код операции, C, «A = 0»
-  [4, 5, 6, 7].forEach((k, i) => w.push([P("RO", Q[k]), P("DE", ADDR28[i])]));
+  [4, 5, 6, 7].forEach((k, i) => w.push([oq(k), P("DE", ADDR28[i])]));
   w.push([P("FC", 4), P("DE", ADDR28[4])], [P("ZN", 4), P("DE", ADDR28[5])]);
   for (const a of ADDR28.slice(6)) w.push([minus, P("DE", a)]);
   w.push([minus, P("DE", 20)], [minus, P("DE", 22)], [plus, P("DE", 27)]);
   // Флаг C
   w.push([P("M1", 12), P("MC", 1)], [P("FC", 4), P("MC", 3)], [SEL, P("MC", 6)], [P("MC", 4), P("FC", 3)], [CLK, P("FC", 1)], [P("N1", 4), P("FC", 6)]);
   // ОЗУ: адрес — N, читается всегда, кроме ST; пишется при ST, пока CLK = 0
-  Q.forEach((q, k) => w.push([P("RN", q), P("RM", ADDR28[k])]));
+  Q.forEach((_, k) => w.push([nq(k), P("RM", ADDR28[k])]));
   for (const a of ADDR28.slice(8)) w.push([minus, P("RM", a)]);
   w.push([minus, P("RM", 20)], [nST, P("N2", 2)], [P("N2", 4), P("RM", 22)], [CLK, P("O1", 1)], [nST, P("O1", 2)], [P("O1", 4), P("RM", 27)]);
   // 74HC244: A на шину ОЗУ при ST
@@ -79,7 +99,7 @@ export function mem(microcode: number[] = MICROCODE, mutate: (w: [Endpoint, Endp
   // Второе слагаемое: N или RAM[N]; потом XOR (вычитание)
   for (let k = 0; k < 8; k++) {
     const m = k < 4 ? "MA" : "MB", [i0, i1, y] = MUXC[k & 3];
-    w.push([P("RN", Q[k]), P(m, i0)], [P("RM", IO28[k]), P(m, i1)], [P(m, y), P(`X${k}`, 1)], [SUB, P(`X${k}`, 2)]);
+    w.push([nq(k), P(m, i0)], [P("RM", IO28[k]), P(m, i1)], [P(m, y), P(`X${k}`, 1)], [SUB, P(`X${k}`, 2)]);
   }
   for (const m of ["MA", "MB"]) w.push([MEM, P(m, 1)], [minus, P(m, 15)]);
   // «A = 0»: ИЛИ по парам, по четвёркам, ИЛИ-НЕ всех
@@ -92,7 +112,7 @@ export function mem(microcode: number[] = MICROCODE, mutate: (w: [Endpoint, Endp
     w.push([SEL, P(m, 5)], [CLK, P(m, 6)], [RST, P(m, 7)], [nWA, P(m, 8)], [nWO, P(m, 9)], [minus, P(m, 10)], [plus, P(m, 24)]);
   }
   w.push([SUB, P("M0", 11)], [P("M0", 12), P("M1", 11)]);
-  const sc = proj.start();
+  const sc = (long ? projLong : proj).start();
   sc.components.push(...comps);
   sc.wires.push(...mutate(w).map(([a, b], i) => ({ id: `WX${i}`, a, b, color: "" })));
   sc.chips = allChips;

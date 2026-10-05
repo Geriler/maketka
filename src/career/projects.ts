@@ -535,6 +535,42 @@ function memCheck(scene: Scene): LessonStep[] {
   return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2Emulate(MEM_PROGRAM, k), hex, MEM_FILL)];
 }
 
+/**
+ * Программа «Длинных программ» — 13 × 11 сложением в цикле, адреса во всю ширину: результат и
+ * счётчик — в ОЗУ по адресам A5 и 5A; цикл на AB…B2 (проходит AF → B0 — перенос между
+ * счётчиками команд); выход из цикла по JNZ, проверка на 143 вычитанием и стоп (за HLT — LDI 77 и OUT:
+ * не остановится — будет видно).
+ */
+const LONG_CODE: [number, number, number][] = [
+  [0x00, 0x10, 0x00], [0x01, 0x30, 0xa5], [0x02, 0x10, 0x0b], [0x03, 0x30, 0x5a], [0x04, 0x90, 0xab],
+  [0xab, 0x20, 0xa5], [0xac, 0x40, 0x0d], [0xad, 0x30, 0xa5], [0xae, 0x80, 0x00], [0xaf, 0x20, 0x5a], [0xb0, 0x50, 0x01], [0xb1, 0x30, 0x5a], [0xb2, 0xc0, 0xab], [0xb3, 0x90, 0x5a],
+  [0x5a, 0x20, 0xa5], [0x5b, 0x50, 0x8f], [0x5c, 0xb0, 0x5e], [0x5d, 0xf0, 0x00], [0x5e, 0x10, 0x5a], [0x5f, 0x80, 0x00], [0x60, 0xf0, 0x00],
+  // Если HLT не держит — выход станет 77
+  [0x61, 0x10, 0x77], [0x62, 0x80, 0x00],
+];
+export const LONG_PROGRAM = {
+  op: Array.from({ length: 256 }, (_, a) => LONG_CODE.find(([x]) => x === a)?.[1] ?? 0),
+  n: Array.from({ length: 256 }, (_, a) => LONG_CODE.find(([x]) => x === a)?.[2] ?? 0),
+};
+/** Тактов в проверке «Длинных программ»: вся программа до HLT и ещё немного стоя. */
+export const LONG_CLOCKS = 104;
+
+/** Проверка «Длинных программ»: программа — в двух EEPROM (коды и числа), третья — декодер. */
+function longCheck(scene: Scene): LessonStep[] {
+  const ee = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === EEPROM_ID);
+  const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+  const is = (c: (typeof ee)[number], want: number[]) => want.every((w, a) => eepromWord(c.data, a) === w);
+  if (!scene.components.some((c) => c.type === "chip" && c.def === SRAM_ID)) return [{ text: "На плате ОЗУ HM62256B — память данных", ok: false }];
+  if (ee.length < 3) return [{ text: `На плате три EEPROM AT28C256: коды операций, числа и декодер — сейчас ${ee.length}`, ok: false }];
+  const opE = ee.find((c) => is(c, LONG_PROGRAM.op));
+  const nE = ee.find((c) => c !== opE && is(c, LONG_PROGRAM.n));
+  if (!opE || !nE) {
+    const show = (c: (typeof ee)[number]) => `${c.id}: ${LONG_CODE.map(([a]) => `${hex(a)} → ${hex(eepromWord(c.data, a))}`).join(", ")}`;
+    return [{ text: `В EEPROM — программа из описания (${!opE ? "не нашлось EEPROM с кодами операций" : "не нашлось EEPROM с числами"}): сейчас ${ee.map(show).join("; ")}`, ok: false }];
+  }
+  return [{ text: "В EEPROM — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2Emulate(LONG_PROGRAM, k, 8, 8), hex, MEM_FILL, LONG_CLOCKS)];
+}
+
 // ─── Процессор 32 бит: восемь модулей «Срез», число N — 4 байта в четырёх ПЗУ ─────
 
 /** Выход OUT0…OUT31 — площадки J6…J37. */
@@ -648,7 +684,7 @@ function cpuBench(id: string, board = CPU_BOARD): Scene {
 export const CPU_CLOCKS = 24;
 
 /** Прогнать процессор: сброс, такты по одному, после каждого — что на выходе; потом сброс посреди работы. */
-export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out, ramFill?: number) {
+export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out, ramFill?: number, clocks = CPU_CLOCKS) {
   const r = runner(scene);
   const find = netOf(r.sim.scene);
   const fights = new Set<string>();
@@ -678,7 +714,7 @@ export function cpuRun(scene: Scene, outPins: readonly string[] = CPU_PINS.out, 
   press("SB2");
   const afterReset = out();
   const outs: number[] = [];
-  for (let i = 0; i < CPU_CLOCKS; i++) {
+  for (let i = 0; i < clocks; i++) {
     press("SB1");
     outs.push(out());
   }
@@ -770,16 +806,20 @@ export function bootRun(scene: Scene) {
  * Шаги проверки процессора после программы: висящие входы, медь, сброс, такт за тактом, сброс
  * посреди работы, перегрев. want(k) — что должно быть на выходе после k тактов (эмулятор).
  */
-function cpuSteps(scene: Scene, outPins: readonly string[], want: (clocks: number) => number[], fmt: (v: number) => string, ramFill?: number): LessonStep[] {
-  const { afterReset, outs, again, fights, hurt } = cpuRun(scene, outPins, ramFill);
-  const w = want(CPU_CLOCKS);
+function cpuSteps(scene: Scene, outPins: readonly string[], want: (clocks: number) => number[], fmt: (v: number) => string, ramFill?: number, clocks = CPU_CLOCKS): LessonStep[] {
+  const { afterReset, outs, again, fights, hurt } = cpuRun(scene, outPins, ramFill, clocks);
+  const w = want(clocks);
   const bad = outs.findIndex((o, i) => o !== w[i]);
   const wAgain = want(again.length);
   const badAgain = again.findIndex((o, i) => o !== wAgain[i]);
   const floating = floatingInputs(scene);
   const shorts = foreignContacts(scene);
   const shortName = (k: (typeof shorts)[number]) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`;
-  const list = (xs: number[]) => xs.map(fmt).join(" ");
+  // Длинный прогон — повторы подряд сжаты: «8F ×5»
+  const list = (xs: number[]) =>
+    xs.length <= CPU_CLOCKS
+      ? xs.map(fmt).join(" ")
+      : xs.reduce<[number, number][]>((m, x) => (m.length && m[m.length - 1][0] === x ? (m[m.length - 1][1]++, m) : [...m, [x, 1]]), []).map(([x, n]) => (n > 1 ? `${fmt(x)} ×${n}` : fmt(x))).join(" ");
   return [
     { text: floating.length ? `Выводы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы и выводы питания микросхем куда-то подключены", ok: !floating.length },
     { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
@@ -1220,6 +1260,36 @@ export const PROJECTS: Lesson[] = [
     ],
     start: () => cpuBench("proj-mem", CPU8_BOARD),
     check: memCheck,
+  },
+  {
+    id: "proj-long",
+    project: true,
+    after: "proj-mem",
+    title: "Длинные программы",
+    about:
+      "Тот же процессор с памятью, но программе больше не тесно в 16 командах: счётчик команд — восьмиразрядный (адреса 0…255), программа — в двух EEPROM AT28C256 (в одной — коды операций, в другой — числа N, по одному адресу), переходы JMP, JC, JZ, JNZ — на полный адрес N. Команды и их коды — как в «Памяти и проверке на ноль»: 0 NOP, 1 LDI, 2 LD, 3 ST, 4 ADDI, 5 SUBI, 6 ADD, 7 SUB, 8 OUT, 9 JMP, A JC, B JZ, C JNZ, F HLT. Пустые ячейки EEPROM — 00, то есть NOP. Декодер — третья EEPROM, таблицу вписываете вы. Числа — на двух модулях «Срез 2», данные — в ОЗУ HM62256B (после включения в нём мусор). Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT7 — J6…J13. Программа проверки — 13 × 11 сложением в цикле (адрес → код и число, остальные адреса пустые): 00 → 10 00, 01 → 30 A5, 02 → 10 0B, 03 → 30 5A, 04 → 90 AB, AB → 20 A5, AC → 40 0D, AD → 30 A5, AE → 80 00, AF → 20 5A, B0 → 50 01, B1 → 30 5A, B2 → C0 AB, B3 → 90 5A, 5A → 20 A5, 5B → 50 8F, 5C → B0 5E, 5D → F0 00, 5E → 10 5A, 5F → 80 00, 60 → F0 00, 61 → 10 77, 62 → 80 00. Проверка сверяет программу, смотрит висящие входы и выводы питания, медь и спор на шине, жмёт RST и 104 раза CLK, потом RST посреди работы. Выход — в шестнадцатеричном виде.",
+    hints: [
+      "Восемь разрядов адреса — два четырёхразрядных счётчика. Когда должен считать старший? Какой вывод младшего говорит, что он дошёл до 15 и сейчас перейдёт в 0?",
+      "Загрузка адреса перехода — одна на оба счётчика, остановка по HLT — тоже. Что из этого подаётся на оба одинаково, а что у старшего своё?",
+    ],
+    kit: [
+      chip("cnt161", 2),
+      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 3 },
+      { part: "other", type: "chip", tool: `chip:${SRAM_ID}`, preset: { smd: true }, match: { def: SRAM_ID }, label: "ОЗУ HM62256B", count: 1 },
+      chip("slice4a", 2),
+      chip("mux4q", 2),
+      chip("buf8z"),
+      chip("xor", 8),
+      chip("or", 7),
+      chip("nor"),
+      chip("dffr"),
+      chip("mux"),
+      chip("not", 2),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 8 },
+      { part: "resistor", ohms: 1000, count: 8 },
+    ],
+    start: () => cpuBench("proj-long", CPU8_BOARD),
+    check: longCheck,
   },
   {
     id: "proj-cpu32",
