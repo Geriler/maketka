@@ -145,6 +145,7 @@ const PLACE: Record<string, [number, number]> = {
   "proj-cpu8m": [10, 8.4],
   "proj-cpu32": [10, 9.6],
   "proj-dec": [11, 8.4],
+  "proj-flags": [11, 9.6],
   slice: [7, 3.6],
 };
 /**

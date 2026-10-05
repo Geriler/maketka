@@ -73,16 +73,22 @@ export function floatingInputs(scene: Scene): string[] {
   const find = netOf(scene);
   const driven = new Set<string>();
   const inputs: [string, string][] = [];
+  // Вывод питания или общего, к которому ничего не подведено: микросхема без него иногда «работает»
+  // через защитные диоды входов, но как попало
+  const power: [string, string][] = [];
+  const count = new Map<string, number>();
   for (const c of scene.components) {
     const def = c.type === "chip" ? resolveChip(scene, c.def) : undefined;
     for (let p = 0; p < pinsOf(c); p++) {
       const node = find(pinNode(c, p));
+      count.set(node, (count.get(node) ?? 0) + 1);
       const role = def?.pinRoles?.[p];
       if (role === "in") inputs.push([node, `${c.id}.${p + 1}${def?.pinNames?.[p] ? ` (${def.pinNames[p]})` : ""}`]);
       else if (role !== "nc") driven.add(node);
+      if (role === "vcc" || role === "gnd") power.push([node, `${c.id}.${p + 1} (${role === "vcc" ? "питание" : "общий"})`]);
     }
   }
-  return inputs.filter(([n]) => !driven.has(n)).map(([, name]) => name);
+  return [...inputs.filter(([n]) => !driven.has(n)), ...power.filter(([n]) => count.get(n) === 1)].map(([, name]) => name);
 }
 
 /** Объединение узлов в цепи: провода и дорожки (без обрывов). */
@@ -468,6 +474,35 @@ function decCheck(scene: Scene): LessonStep[] {
   return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2Emulate(DEC_PROGRAM, k), hex)];
 }
 
+/**
+ * Программа «Переноса и условного перехода»: цикл счёта вниз с выходом по заёму, перенос из ADDI,
+ * C не меняется от LDI и NOP, JC и в ту, и в другую сторону, HLT с N ≠ 0 в конце.
+ * 0: LDI 02; 1: OUT; 2: SUBI 01; 3: JC 1 — выведет 2, 1, 0, потом A = FF, C = 0; 4: OUT (FF);
+ * 5: ADDI 01 (00, C = 1); 6: LDI 5A; 7: JC 9 (C осталась); 8: HLT; 9: SUBI A5 (B5, заём — C = 0);
+ * 10: OUT; 11: NOP; 12: JC 0 (не переходит); 13: ADDI 4B (00, C = 1); 14: OUT; 15: HLT.
+ */
+export const FLAGS_PROGRAM = {
+  op: [0x10, 0x80, 0x50, 0xa0, 0x80, 0x40, 0x10, 0xa0, 0xf0, 0x50, 0x80, 0x00, 0xa0, 0x40, 0x80, 0xf0],
+  n: [0x02, 0x00, 0x01, 0x01, 0x00, 0x01, 0x5a, 0x09, 0x00, 0xa5, 0x00, 0x33, 0x00, 0x4b, 0x0e, 0x02],
+};
+
+/** Проверка «Переноса и условного перехода»: как у «Декодера», программа — своя. */
+function flagsCheck(scene: Scene): LessonStep[] {
+  const roms = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === PROM_ID);
+  const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+  const words = (c: (typeof roms)[number]) => FLAGS_PROGRAM.op.map((_, a) => promWord(c.data, a));
+  const is = (c: (typeof roms)[number], want: number[]) => want.every((w, a) => words(c)[a] === w);
+  if (!scene.components.some((c) => c.type === "chip" && c.def === EEPROM_ID)) return [{ text: "На плате EEPROM AT28C256 — декодер команд", ok: false }];
+  if (roms.length < 2) return [{ text: "На плате два ПЗУ 74S288: одно — коды операций, другое — числа", ok: false }];
+  const opRom = roms.find((c) => is(c, FLAGS_PROGRAM.op));
+  const nRom = roms.find((c) => c !== opRom && is(c, FLAGS_PROGRAM.n));
+  if (!nRom || !opRom) {
+    const show = (c: (typeof roms)[number]) => `${c.id}: ${words(c).map((w, a) => `${a} → ${hex(w)}`).join(", ")}`;
+    return [{ text: `В ПЗУ — программа из описания (${!opRom ? "не нашлось ПЗУ с кодами операций" : "не нашлось ПЗУ с числами"}): сейчас ${roms.map(show).join("; ")}`, ok: false }];
+  }
+  return [{ text: "В ПЗУ — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2Emulate(FLAGS_PROGRAM, k), hex)];
+}
+
 // ─── Процессор 32 бит: восемь модулей «Срез», число N — 4 байта в четырёх ПЗУ ─────
 
 /** Выход OUT0…OUT31 — площадки J6…J37. */
@@ -704,7 +739,7 @@ function cpuSteps(scene: Scene, outPins: readonly string[], want: (clocks: numbe
   const shortName = (k: (typeof shorts)[number]) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`;
   const list = (xs: number[]) => xs.map(fmt).join(" ");
   return [
-    { text: floating.length ? `Входы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы микросхем куда-то подключены", ok: !floating.length },
+    { text: floating.length ? `Выводы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы и выводы питания микросхем куда-то подключены", ok: !floating.length },
     { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
     { text: `После RST на выходе 0 — сейчас ${fmt(afterReset)}`, ok: afterReset === 0 },
     { text: `Такт за тактом на выходе: ${list(outs)}${bad >= 0 ? ` (на ${bad + 1}-м такте нужно ${fmt(w[bad])})` : ""}`, ok: bad < 0 },
@@ -1087,6 +1122,32 @@ export const PROJECTS: Lesson[] = [
     check: decCheck,
   },
   {
+    id: "proj-flags",
+    project: true,
+    after: "proj-dec",
+    title: "Перенос и условный переход",
+    about:
+      "«Декодер команд», которому есть из чего выбирать: у процессора появляется флаг C — перенос — и переход по нему. Новые команды: 5 — SUBI (A ← A − N), A — JC (перейти на адрес N mod 16, если C = 1, иначе — на следующий), F — HLT (стоять на месте: счётчик команд не меняется, пока не нажат RST). ADDI и SUBI ставят C: у сложения — 1, если сумма перевалила за 255, у вычитания — 1, если вычитаемое не больше уменьшаемого (заёма не было); остальные команды C не трогают. RST обнуляет и C. Прежние команды — как в «Декодере»: 0 — NOP, 1 — LDI, 4 — ADDI, 8 — OUT, 9 — JMP. Каждая — за один такт CLK, по тому, что было до фронта. Решает, что делать, по-прежнему EEPROM AT28C256 — таблицу вписываете вы. Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT7 — J6…J13. Программа проверки — коды: 0 → 10, 1 → 80, 2 → 50, 3 → A0, 4 → 80, 5 → 40, 6 → 10, 7 → A0, 8 → F0, 9 → 50, 10 → 80, 11 → 00, 12 → A0, 13 → 40, 14 → 80, 15 → F0; числа: 0 → 02, 1 → 00, 2 → 01, 3 → 01, 4 → 00, 5 → 01, 6 → 5A, 7 → 09, 8 → 00, 9 → A5, 10 → 00, 11 → 33, 12 → 00, 13 → 4B, 14 → 0E, 15 → 02. Проверка сверяет ПЗУ, смотрит висящие входы и медь, жмёт RST, 24 раза CLK и RST посреди работы. Выход — в шестнадцатеричном виде.",
+    hints: [
+      "Модуль умеет только складывать. Чему равно A − N в восьми битах, если вспомнить, как записываются отрицательные числа? Что для этого сделать с N и с переносом на входе младшего модуля?",
+      "Триггер запоминает по каждому фронту. Как сделать, чтобы C менялся только от ADDI и SUBI, а остальные команды его не трогали? И откуда декодер узнает, надо ли переходить по JC, — что ещё можно подать ему на адрес?",
+    ],
+    kit: [
+      chip("cnt161"),
+      { part: "other", type: "chip", tool: `chip:${PROM_ID}`, preset: {}, match: { def: PROM_ID }, label: "ПЗУ 74S288", count: 2 },
+      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 1 },
+      chip("slice4", 2),
+      chip("xor", 8),
+      chip("dffr"),
+      chip("mux"),
+      chip("not", 1),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 8 },
+      { part: "resistor", ohms: 1000, count: 8 },
+    ],
+    start: () => cpuBench("proj-flags", CPU8_BOARD),
+    check: flagsCheck,
+  },
+  {
     id: "proj-cpu32",
     project: true,
     after: "proj-cpu8m",
@@ -1149,7 +1210,7 @@ export const PROJECTS: Lesson[] = [
       const shortName = (k: (typeof shorts)[number]) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`;
       return [
         { text: "В EEPROM — программа из описания", ok: true },
-        { text: floating.length ? `Входы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы микросхем куда-то подключены", ok: !floating.length },
+        { text: floating.length ? `Выводы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы и выводы питания микросхем куда-то подключены", ok: !floating.length },
         { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
         { text: fights.length ? `Две микросхемы выводят на одну цепь разом: ${fights.slice(0, 3).join("; ")}${fights.length > 3 ? ` и ещё ${fights.length - 3}` : ""}` : "На каждую цепь выводит только одна микросхема", ok: !fights.length },
         { text: `Загрузка — 16 тактов после RST, выход 0: ${boot.join(" ")}`, ok: boot.every((o) => o === 0) },
