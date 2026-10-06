@@ -32,7 +32,7 @@ describe("Регистры", () => {
   for (const [what, mc, st] of [
     ["не пишет регистр обратно", REGS_MICROCODE, REGS_STACK.map((b, a) => (a >> 6 === 2 ? b | 0x20 : b))],
     ["нет такта «A ← Rr» (регистры не на шину)", REGS_MICROCODE, REGS_STACK.map((b, a) => (a >> 6 === 0 ? b | 0x10 : b))],
-    ["команда не кончается (E̅N̅D̅ не включается)", REGS_MICROCODE, REGS_STACK.map((b, a) => b | 0x08)],
+    ["команда не кончается (E̅N̅D̅ не включается)", REGS_MICROCODE, REGS_STACK.map((b) => b | 0x08)],
     ["JC в третьем такте не переходит", withStep(REGS_MICROCODE, 10, 2, 0x8b), REGS_STACK],
   ] as const)
     it(`микрокод с ошибкой: ${what} — не проходит`, () => {
