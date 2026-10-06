@@ -7,11 +7,12 @@
 import type { Component, Endpoint, Scene } from "../src/model/types";
 import { applyBoards } from "../src/model/breadboard";
 import { EEPROM_ID, SRAM_ID } from "../src/chips/memory";
-import { CPU_PINS, CPU8_OUT, PROJECTS, REGS_PROGRAM } from "../src/career/projects";
+import { CPU_PINS, CPU8_OUT, PROJECTS, REGS_PROGRAM, RR_PROGRAM } from "../src/career/projects";
 import { MICROCODE } from "./mem-build";
 import { P, allChips } from "./module-build";
 
 export const proj = PROJECTS.find((p) => p.id === "proj-regs")!;
+export const projRR = PROJECTS.find((p) => p.id === "proj-rr")!;
 const f = { mode: "free" as const, x: 0, z: 0, rot: 0 };
 const chip = (id: string, ref: string, data?: number[]): Component => {
   const d = allChips[ref];
@@ -53,12 +54,24 @@ const CQ = [14, 13, 12, 11], CD = [3, 4, 5, 6];
 /** 74HC173: Q0…Q3, D0…D3. */
 const RQ = [3, 4, 5, 6], RD = [14, 13, 12, 11];
 
-export function regs(microcode: number[] = REGS_MICROCODE, stack: number[] = REGS_STACK, mutate: (w: [Endpoint, Endpoint][]) => [Endpoint, Endpoint][] = (w) => w): Scene {
+/**
+ * «Регистр с регистром»: на адресе декодера ещё f (A8…A11 — старшая тетрада N); код 0 во втором
+ * такте: f = 0 — A ← шина (CA), 1 — A + шина (CE), 2 — A − шина (DE), регистры на шину (EE).
+ */
+const RR_STEP1 = [0xca, 0xce, 0xde];
+export const RR_MICROCODE = Array.from({ length: 4096 }, (_, a) => ((a & 15) === 0 && ((a >> 6) & 3) === 1 && a >> 8 <= 2 ? RR_STEP1[a >> 8] : REGS_MICROCODE[a & 255]));
+export const RR_STACK = Array.from({ length: 4096 }, (_, a) => ((a & 15) === 0 && ((a >> 6) & 3) === 1 && a >> 8 <= 2 ? 0xee : REGS_STACK[a & 255]));
+
+/** rr — «Регистр с регистром»: адрес ОЗУ регистров — 74HC157 (r, во втором такте — s из N), f — на декодер. */
+export function regs(microcode?: number[], stack?: number[], mutate: (w: [Endpoint, Endpoint][]) => [Endpoint, Endpoint][] = (w) => w, rr = false): Scene {
+  microcode ??= rr ? RR_MICROCODE : REGS_MICROCODE;
+  stack ??= rr ? RR_STACK : REGS_STACK;
+  const prog = rr ? RR_PROGRAM : REGS_PROGRAM;
   const plus: Endpoint = { comp: "G1", pin: 1 }, minus: Endpoint = { comp: "G1", pin: 0 };
   const CLK: Endpoint = { hole: CPU_PINS.clk }, RST: Endpoint = { hole: CPU_PINS.rst };
   const gates = ["N1", "N2", "O1", "O2", "O3", ...Array.from({ length: 6 }, (_, k) => `Z${k}`), "ZN", ...Array.from({ length: 8 }, (_, k) => `X${k}`)];
   const comps: Component[] = [
-    chip("PC", "ref:hc161"), chip("PH", "ref:hc161"), chip("SC", "ref:hc161"), chip("RO", EEPROM_ID, REGS_PROGRAM.op), chip("RN", EEPROM_ID, REGS_PROGRAM.n), chip("RR", SRAM_ID),
+    chip("PC", "ref:hc161"), chip("PH", "ref:hc161"), chip("SC", "ref:hc161"), chip("RO", EEPROM_ID, prog.op), chip("RN", EEPROM_ID, prog.n), ...(rr ? [chip("MR", "ref:hc157")] : []), chip("RR", SRAM_ID),
     chip("DE", EEPROM_ID, microcode), chip("DS", EEPROM_ID, stack), chip("RM", SRAM_ID), chip("RS", SRAM_ID),
     chip("BF", "ref:hc244"), chip("BS", "ref:hc244"), chip("MA", "ref:hc157"), chip("MB", "ref:hc157"), chip("MS", "ref:hc157"), chip("ML", "ref:hc157"), chip("MH", "ref:hc157"),
     chip("SP", "ref:hc173"), chip("AS", "ref:hc283"), chip("I0", "ref:hc283"), chip("I1", "ref:hc283"),
@@ -68,7 +81,7 @@ export function regs(microcode: number[] = REGS_MICROCODE, stack: number[] = REG
     ...[0, 1].map((s): Component => ({ id: `M${s}`, type: "chip", def: "ref:slice2", name: "Срез 2", package: "SIP", pins: 24, placement: f }) as Component),
   ];
   const w: [Endpoint, Endpoint][] = [];
-  for (const id of ["SC", "PC", "PH", "MA", "MB", "MS", "ML", "MH", "SP", "AS", "I0", "I1"]) w.push([plus, P(id, 16)], [minus, P(id, 8)]);
+  for (const id of [...(rr ? ["MR"] : []), "SC", "PC", "PH", "MA", "MB", "MS", "ML", "MH", "SP", "AS", "I0", "I1"]) w.push([plus, P(id, 16)], [minus, P(id, 8)]);
   for (const id of ["DE", "DS", "RM", "RS", "RR", "RO", "RN"]) w.push([plus, P(id, 28)], [minus, P(id, 14)]);
   for (const id of ["BF", "BS"]) w.push([plus, P(id, 20)], [minus, P(id, 10)]);
   for (const id of gates) w.push([plus, P(id, 5)], [minus, P(id, 3)]);
@@ -99,7 +112,8 @@ export function regs(microcode: number[] = REGS_MICROCODE, stack: number[] = REG
   for (const d of ["DE", "DS"]) {
     [4, 5, 6, 7].forEach((k, i) => w.push([oq(k), P(d, ADDR28[i])]));
     w.push([P("FC", 4), P(d, ADDR28[4])], [P("ZN", 4), P(d, ADDR28[5])], [P("SC", CQ[0]), P(d, ADDR28[6])], [P("SC", CQ[1]), P(d, ADDR28[7])]);
-    for (const a of ADDR28.slice(8)) w.push([minus, P(d, a)]);
+    if (rr) [4, 5, 6, 7].forEach((k, i) => w.push([nq(k), P(d, ADDR28[8 + i])]));
+    for (const a of ADDR28.slice(rr ? 12 : 8)) w.push([minus, P(d, a)]);
     w.push([minus, P(d, 20)], [minus, P(d, 22)], [plus, P(d, 27)]);
   }
   // Флаг C
@@ -110,7 +124,14 @@ export function regs(microcode: number[] = REGS_MICROCODE, stack: number[] = REG
   w.push([minus, P("RM", 20)], [nMRD, P("RM", 22)], [CLK, P("O1", 1)], [nST, P("O1", 2)], [P("O1", 4), P("RM", 27)]);
   w.push([nABUS, P("BF", 1)], [nABUS, P("BF", 19)]);
   // Регистры: адрес — номер r из байта кода, данные — на общей шине с ОЗУ данных
-  for (let k = 0; k < 4; k++) w.push([oq(k), P("RR", ADDR28[k])]);
+  if (rr) {
+    // Во втором такте (Q0 номера такта = 1) — номер s из N, в остальных — r
+    for (let k = 0; k < 4; k++) {
+      const [i0, i1, y] = MUXC[k];
+      w.push([oq(k), P("MR", i0)], [nq(k), P("MR", i1)], [P("MR", y), P("RR", ADDR28[k])]);
+    }
+    w.push([P("SC", CQ[0]), P("MR", 1)], [minus, P("MR", 15)]);
+  } else for (let k = 0; k < 4; k++) w.push([oq(k), P("RR", ADDR28[k])]);
   for (const a of ADDR28.slice(4)) w.push([minus, P("RR", a)]);
   for (let k = 0; k < 8; k++) w.push([P("RM", IO28[k]), P("RR", IO28[k])]);
   w.push([minus, P("RR", 20)], [nRRD, P("RR", 22)], [CLK, P("O3", 1)], [nRWR, P("O3", 2)], [P("O3", 4), P("RR", 27)]);
@@ -150,7 +171,7 @@ export function regs(microcode: number[] = REGS_MICROCODE, stack: number[] = REG
     w.push([SEL, P(m, 5)], [CLK, P(m, 6)], [RST, P(m, 7)], [nWA, P(m, 8)], [nWO, P(m, 9)], [minus, P(m, 10)], [plus, P(m, 24)]);
   }
   w.push([SUB, P("M0", 11)], [P("M0", 12), P("M1", 11)]);
-  const sc = proj.start();
+  const sc = (rr ? projRR : proj).start();
   sc.components.push(...comps);
   sc.wires.push(...mutate(w).map(([a, b], i) => ({ id: `WX${i}`, a, b, color: "" })));
   sc.chips = allChips;
