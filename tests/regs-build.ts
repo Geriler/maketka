@@ -7,12 +7,13 @@
 import type { Component, Endpoint, Scene } from "../src/model/types";
 import { applyBoards } from "../src/model/breadboard";
 import { EEPROM_ID, SRAM_ID } from "../src/chips/memory";
-import { CPU_PINS, CPU8_OUT, PROJECTS, REGS_PROGRAM, RR_PROGRAM } from "../src/career/projects";
+import { CPU_PINS, CPU8_OUT, LOGIC_PROGRAM, PROJECTS, REGS_PROGRAM, RR_PROGRAM } from "../src/career/projects";
 import { MICROCODE } from "./mem-build";
 import { P, allChips } from "./module-build";
 
 export const proj = PROJECTS.find((p) => p.id === "proj-regs")!;
 export const projRR = PROJECTS.find((p) => p.id === "proj-rr")!;
+export const projLogic = PROJECTS.find((p) => p.id === "proj-logic")!;
 const f = { mode: "free" as const, x: 0, z: 0, rot: 0 };
 const chip = (id: string, ref: string, data?: number[]): Component => {
   const d = allChips[ref];
@@ -62,27 +63,48 @@ const RR_STEP1 = [0xca, 0xce, 0xde];
 export const RR_MICROCODE = Array.from({ length: 4096 }, (_, a) => ((a & 15) === 0 && ((a >> 6) & 3) === 1 && a >> 8 <= 2 ? RR_STEP1[a >> 8] : REGS_MICROCODE[a & 255]));
 export const RR_STACK = Array.from({ length: 4096 }, (_, a) => ((a & 15) === 0 && ((a >> 6) & 3) === 1 && a >> 8 <= 2 ? 0xee : REGS_STACK[a & 255]));
 
+/**
+ * «Логика»: второй такт кода 0 при f = 4, 5, 6 — R̅E̅T̅ (линия RET) = 1 как «логика», режим таблицы —
+ * (RET, SUB, MEM): 100 AND (8A), 101 OR (CA), 110 XOR (9A); регистры на шину и RET = 1 (EF).
+ */
+const LOGIC_STEP1: Record<number, number> = { 4: 0x8a, 5: 0xca, 6: 0x9a };
+const logicAt = (a: number) => (a & 15) === 0 && ((a >> 6) & 3) === 1 && LOGIC_STEP1[a >> 8] !== undefined;
+export const LOGIC_MICROCODE = RR_MICROCODE.map((w, a) => (logicAt(a) ? LOGIC_STEP1[a >> 8] : w));
+export const LOGIC_STACK = RR_STACK.map((w, a) => (logicAt(a) ? 0xef : w));
+/**
+ * Таблица второго операнда на тетраду (обе одинаковые): адрес — A (0…3), шина (4…7), N (8…11), MEM
+ * (12), SUB (13), RET (14). Без RET: N или шина, при SUB — инверсия; с RET: AND, OR, XOR A и шины.
+ */
+export const OPERAND_TABLE = Array.from({ length: 32768 }, (_, x) => {
+  const a = x & 15, b = (x >> 4) & 15, n = (x >> 8) & 15, mem = (x >> 12) & 1, sub = (x >> 13) & 1;
+  if (x >> 14) return [a & b, a | b, a ^ b, 0][sub * 2 + mem];
+  const v = mem ? b : n;
+  return sub ? 15 - v : v;
+});
+
 /** rr — «Регистр с регистром»: адрес ОЗУ регистров — 74HC157 (r, во втором такте — s из N), f — на декодер. */
-export function regs(microcode?: number[], stack?: number[], mutate: (w: [Endpoint, Endpoint][]) => [Endpoint, Endpoint][] = (w) => w, rr = false): Scene {
-  microcode ??= rr ? RR_MICROCODE : REGS_MICROCODE;
-  stack ??= rr ? RR_STACK : REGS_STACK;
-  const prog = rr ? RR_PROGRAM : REGS_PROGRAM;
+export function regs(microcode?: number[], stack?: number[], mutate: (w: [Endpoint, Endpoint][]) => [Endpoint, Endpoint][] = (w) => w, rr = false, logic = false): Scene {
+  rr ||= logic;
+  microcode ??= logic ? LOGIC_MICROCODE : rr ? RR_MICROCODE : REGS_MICROCODE;
+  stack ??= logic ? LOGIC_STACK : rr ? RR_STACK : REGS_STACK;
+  const prog = logic ? LOGIC_PROGRAM : rr ? RR_PROGRAM : REGS_PROGRAM;
   const plus: Endpoint = { comp: "G1", pin: 1 }, minus: Endpoint = { comp: "G1", pin: 0 };
   const CLK: Endpoint = { hole: CPU_PINS.clk }, RST: Endpoint = { hole: CPU_PINS.rst };
-  const gates = ["N1", "N2", "O1", "O2", "O3", ...Array.from({ length: 6 }, (_, k) => `Z${k}`), "ZN", ...Array.from({ length: 8 }, (_, k) => `X${k}`)];
+  const xors = logic ? [] : Array.from({ length: 8 }, (_, k) => `X${k}`);
+  const gates = ["N1", "N2", "O1", "O2", "O3", ...Array.from({ length: 6 }, (_, k) => `Z${k}`), "ZN", ...xors];
   const comps: Component[] = [
     chip("PC", "ref:hc161"), chip("PH", "ref:hc161"), chip("SC", "ref:hc161"), chip("RO", EEPROM_ID, prog.op), chip("RN", EEPROM_ID, prog.n), ...(rr ? [chip("MR", "ref:hc157")] : []), chip("RR", SRAM_ID),
     chip("DE", EEPROM_ID, microcode), chip("DS", EEPROM_ID, stack), chip("RM", SRAM_ID), chip("RS", SRAM_ID),
-    chip("BF", "ref:hc244"), chip("BS", "ref:hc244"), chip("MA", "ref:hc157"), chip("MB", "ref:hc157"), chip("MS", "ref:hc157"), chip("ML", "ref:hc157"), chip("MH", "ref:hc157"),
+    chip("BF", "ref:hc244"), chip("BS", "ref:hc244"), ...(logic ? [chip("AL", EEPROM_ID, OPERAND_TABLE), chip("AH", EEPROM_ID, OPERAND_TABLE)] : [chip("MA", "ref:hc157"), chip("MB", "ref:hc157")]), chip("MS", "ref:hc157"), chip("ML", "ref:hc157"), chip("MH", "ref:hc157"),
     chip("SP", "ref:hc173"), chip("AS", "ref:hc283"), chip("I0", "ref:hc283"), chip("I1", "ref:hc283"),
     chip("FC", "ref:dffr"), chip("MC", "ref:mux"),
     chip("N1", "ref:not-cmos"), chip("N2", "ref:not-cmos"), chip("O1", "ref:or"), chip("O2", "ref:or"), chip("O3", "ref:or"), ...Array.from({ length: 6 }, (_, k) => chip(`Z${k}`, "ref:or")), chip("ZN", "ref:nor-cmos"),
-    ...Array.from({ length: 8 }, (_, k) => chip(`X${k}`, "ref:xor")),
+    ...xors.map((id) => chip(id, "ref:xor")),
     ...[0, 1].map((s): Component => ({ id: `M${s}`, type: "chip", def: "ref:slice2", name: "Срез 2", package: "SIP", pins: 24, placement: f }) as Component),
   ];
   const w: [Endpoint, Endpoint][] = [];
-  for (const id of [...(rr ? ["MR"] : []), "SC", "PC", "PH", "MA", "MB", "MS", "ML", "MH", "SP", "AS", "I0", "I1"]) w.push([plus, P(id, 16)], [minus, P(id, 8)]);
-  for (const id of ["DE", "DS", "RM", "RS", "RR", "RO", "RN"]) w.push([plus, P(id, 28)], [minus, P(id, 14)]);
+  for (const id of [...(rr ? ["MR"] : []), "SC", "PC", "PH", ...(logic ? [] : ["MA", "MB"]), "MS", "ML", "MH", "SP", "AS", "I0", "I1"]) w.push([plus, P(id, 16)], [minus, P(id, 8)]);
+  for (const id of [...(logic ? ["AL", "AH"] : []), "DE", "DS", "RM", "RS", "RR", "RO", "RN"]) w.push([plus, P(id, 28)], [minus, P(id, 14)]);
   for (const id of ["BF", "BS"]) w.push([plus, P(id, 20)], [minus, P(id, 10)]);
   for (const id of gates) w.push([plus, P(id, 5)], [minus, P(id, 3)]);
   for (const id of ["FC", "MC"]) w.push([plus, P(id, 5)], [minus, P(id, 2)]);
@@ -137,12 +159,25 @@ export function regs(microcode?: number[], stack?: number[], mutate: (w: [Endpoi
   w.push([minus, P("RR", 20)], [nRRD, P("RR", 22)], [CLK, P("O3", 1)], [nRWR, P("O3", 2)], [P("O3", 4), P("RR", 27)]);
   const aBit = (k: number) => P(`M${k >> 2}`, 17 + (k & 3));
   BUF.forEach(([a, y], k) => w.push([aBit(k), P("BF", a)], [P("BF", y), P("RM", IO28[k])]));
-  // Второе слагаемое: N или RAM[N]; потом XOR (вычитание)
-  for (let k = 0; k < 8; k++) {
-    const m = k < 4 ? "MA" : "MB", [i0, i1, y] = MUXC[k & 3];
-    w.push([nq(k), P(m, i0)], [P("RM", IO28[k]), P(m, i1)], [P(m, y), P(`X${k}`, 1)], [SUB, P(`X${k}`, 2)]);
+  /** Вход N модулей, бит k. */
+  const bIn: Endpoint[] = [];
+  if (logic) {
+    // Второе слагаемое — таблицы на тетраду: A, шина, N, режим (MEM, SUB, RET)
+    for (const [t, h] of [["AL", 0], ["AH", 4]] as const) {
+      for (let k = 0; k < 4; k++) w.push([aBit(h + k), P(t, ADDR28[k])], [P("RM", IO28[h + k]), P(t, ADDR28[4 + k])], [nq(h + k), P(t, ADDR28[8 + k])]);
+      w.push([MEM, P(t, ADDR28[12])], [SUB, P(t, ADDR28[13])], [RET, P(t, ADDR28[14])]);
+      w.push([minus, P(t, 20)], [minus, P(t, 22)], [plus, P(t, 27)]);
+      for (let k = 0; k < 4; k++) bIn.push(P(t, IO28[k]));
+    }
+  } else {
+    // Второе слагаемое: N или RAM[N]; потом XOR (вычитание)
+    for (let k = 0; k < 8; k++) {
+      const m = k < 4 ? "MA" : "MB", [i0, i1, y] = MUXC[k & 3];
+      w.push([nq(k), P(m, i0)], [P("RM", IO28[k]), P(m, i1)], [P(m, y), P(`X${k}`, 1)], [SUB, P(`X${k}`, 2)]);
+      bIn.push(P(`X${k}`, 4));
+    }
+    for (const m of ["MA", "MB"]) w.push([MEM, P(m, 1)], [minus, P(m, 15)]);
   }
-  for (const m of ["MA", "MB"]) w.push([MEM, P(m, 1)], [minus, P(m, 15)]);
   // «A = 0»
   [0, 1, 2, 3].forEach((g) => w.push([aBit(2 * g), P(`Z${g}`, 1)], [aBit(2 * g + 1), P(`Z${g}`, 2)]));
   w.push([P("Z0", 4), P("Z4", 1)], [P("Z1", 4), P("Z4", 2)], [P("Z2", 4), P("Z5", 1)], [P("Z3", 4), P("Z5", 2)], [P("Z4", 4), P("ZN", 1)], [P("Z5", 4), P("ZN", 2)]);
@@ -167,11 +202,11 @@ export function regs(microcode?: number[], stack?: number[], mutate: (w: [Endpoi
   // Модули «Срез 2»
   for (let s = 0; s < 2; s++) {
     const m = `M${s}`;
-    [0, 1, 2, 3].forEach((k) => w.push([P(`X${4 * s + k}`, 4), P(m, k + 1)], [P(m, 13 + k), { hole: CPU8_OUT[4 * s + k] }]));
+    [0, 1, 2, 3].forEach((k) => w.push([bIn[4 * s + k], P(m, k + 1)], [P(m, 13 + k), { hole: CPU8_OUT[4 * s + k] }]));
     w.push([SEL, P(m, 5)], [CLK, P(m, 6)], [RST, P(m, 7)], [nWA, P(m, 8)], [nWO, P(m, 9)], [minus, P(m, 10)], [plus, P(m, 24)]);
   }
   w.push([SUB, P("M0", 11)], [P("M0", 12), P("M1", 11)]);
-  const sc = (rr ? projRR : proj).start();
+  const sc = (logic ? projLogic : rr ? projRR : proj).start();
   sc.components.push(...comps);
   sc.wires.push(...mutate(w).map(([a, b], i) => ({ id: `WX${i}`, a, b, color: "" })));
   sc.chips = allChips;

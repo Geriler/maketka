@@ -152,6 +152,7 @@ const PLACE: Record<string, [number, number]> = {
   "proj-call": [11, 13.2],
   "proj-regs": [11, 14.4],
   "proj-rr": [11, 15.6],
+  "proj-logic": [11, 16.8],
   slice: [7, 3.6],
   slice2: [7, 2.4],
 };
