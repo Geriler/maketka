@@ -10,12 +10,14 @@ const withOp = (mc: number[], op: number, byte: number) => mc.map((b, a) => ((a 
 const same = (a: { comp: string; pin: number } | { hole: string }, b: { comp: string; pin: number }) => JSON.stringify(a) === JSON.stringify(b);
 
 describe("Подпрограммы", () => {
-  it("программа: удвоения, вложенность 3, рекурсия глубиной 5, потом стоп", () => {
+  it("программа: удвоения, вложенность 3, рекурсия глубиной 5, B0 и стоп", () => {
     const o = m2Emulate(CALL_PROGRAM, CALL_CLOCKS, 8, 8);
     const changes = o.filter((v, i) => i === 0 || v !== o[i - 1]);
-    expect(changes).toEqual([0, 2, 8, 0x40, 2, 5, 4, 3, 2, 1, 0]);
+    expect(changes).toEqual([0, 2, 8, 0x40, 2, 5, 4, 3, 2, 1, 0, 0xb0]);
+    // Каждый разряд выхода хоть раз — 1
+    expect(changes.reduce((m, v) => m | v, 0)).toBe(0xff);
     // До конца проверки машина стоит на HLT не меньше 5 тактов
-    expect(o.slice(-6).every((v) => v === 0)).toBe(true);
+    expect(o.slice(-6).every((v) => v === 0xb0)).toBe(true);
   });
   it("стек по кругу: 17 вложенных CALL затирают первый адрес возврата", () => {
     const op = Array(256).fill(0), n = Array(256).fill(0);

@@ -454,6 +454,51 @@ export function m2Emulate(prog: { op: number[]; n: number[] }, clocks: number, b
 }
 
 /**
+ * М2 с регистрами: всё, что делала с A, команда делает с регистром Rr (r — биты 11…8, младшая
+ * тетрада байта кода), A — рабочий регистр внутри такта. Команда идёт три такта: A ← Rr; действие;
+ * Rr ← A и переход (счётчик команд, стек — в третьем). OUT выводит Rr в конце второго такта.
+ * Регистры — в ОЗУ: после включения в них fill.
+ */
+export function m2rEmulate(prog: { op: number[]; n: number[] }, clocks: number, fill = MEM_FILL): number[] {
+  const ram = new Map<number, number>();
+  const reg = Array<number>(16).fill(fill);
+  const stack: number[] = [];
+  let pc = 0, out = 0, c = false, sp = 0;
+  const outs: number[] = [];
+  while (outs.length < clocks) {
+    const code = (prog.op[pc] ?? 0) >> 4, r = (prog.op[pc] ?? 0) & 15, n = prog.n[pc] ?? 0;
+    let a = reg[r], next = (pc + 1) % 256;
+    const arith = (b: number, sub: boolean) => {
+      const x = sub ? a + (255 - b) + 1 : a + b;
+      c = x > 255;
+      a = x % 256;
+    };
+    outs.push(out);
+    switch (code) {
+      case M2.LDI: a = n; break;
+      case M2.LD: a = ram.get(n) ?? fill; break;
+      case M2.ST: ram.set(n, a); break;
+      case M2.ADDI: arith(n, false); break;
+      case M2.SUBI: arith(n, true); break;
+      case M2.ADD: arith(ram.get(n) ?? fill, false); break;
+      case M2.SUB: arith(ram.get(n) ?? fill, true); break;
+      case M2.OUT: out = a; break;
+      case M2.JMP: next = n; break;
+      case M2.JC: if (c) next = n; break;
+      case M2.JZ: if (a === 0) next = n; break;
+      case M2.JNZ: if (a !== 0) next = n; break;
+      case M2.CALL: stack[sp] = next; sp = (sp + 15) % 16; next = n; break;
+      case M2.RET: sp = (sp + 1) % 16; next = stack[sp] ?? fill; break;
+      case M2.HLT: next = pc; break;
+    }
+    outs.push(out, out);
+    reg[r] = a;
+    pc = next;
+  }
+  return outs.slice(0, clocks);
+}
+
+/**
  * Программа «Декодера команд»: каждая из пяти команд и пустая NOP с ненулевым N (её ошибку видно
  * на выходе); у OUT тоже N ≠ 0 — переход или запись в A по ошибке видны. 0: LDI A5; 1: ADDI 5A (FF);
  * 2: OUT; 3: ADDI 01 (00 — перенос теряется); 4: OUT; 5: ADDI FE; 6: NOP; 7: OUT; 8: LDI 5A; 9: OUT;
@@ -581,14 +626,15 @@ function longCheck(scene: Scene): LessonStep[] {
 /**
  * Программа «Подпрограмм»: удвоение (80: ST F0, ADD F0, RET), учетверение (C7 — дважды удвоение),
  * умножение на 8 (5B — учетверение и удвоение: вложенность 3), рекурсия (E0: OUT, SUBI 1, JZ E4,
- * CALL E0, RET — глубина 5). Адреса возврата — 02, 04, 10, C8, C9, 5C, 5D, 30, 33, E4: каждый
- * разряд хоть раз и 0, и 1; вызов из 0F и 2F — перенос между счётчиками в «адрес + 1». За HLT —
- * LDI 77 и OUT.
+ * CALL E0, RET — глубина 5), напоследок 16 × 8 = B0 (выходы 2, 8, 40, 5…1, B0 — каждый разряд
+ * выхода хоть раз 1). Адреса возврата — 02, 04, 10, C8, C9, 5C, 5D, 30, 33, E4, 36: каждый разряд
+ * хоть раз и 0, и 1; вызов из 0F и 2F — перенос между счётчиками в «адрес + 1». За HLT — LDI 77 и OUT.
  */
 const CALL_CODE: [number, number, number][] = [
   [0x00, 0x10, 0x01], [0x01, 0xd0, 0x80], [0x02, 0x80, 0x00], [0x03, 0xd0, 0xc7], [0x04, 0x80, 0x00], [0x05, 0x90, 0x0f],
   [0x0f, 0xd0, 0x5b], [0x10, 0x80, 0x00], [0x11, 0x50, 0x3f], [0x12, 0x90, 0x2f],
-  [0x2f, 0xd0, 0x80], [0x30, 0x80, 0x00], [0x31, 0x10, 0x05], [0x32, 0xd0, 0xe0], [0x33, 0x80, 0x00], [0x34, 0xf0, 0x00], [0x35, 0x10, 0x77], [0x36, 0x80, 0x00],
+  [0x2f, 0xd0, 0x80], [0x30, 0x80, 0x00], [0x31, 0x10, 0x05], [0x32, 0xd0, 0xe0], [0x33, 0x80, 0x00], [0x34, 0x10, 0x16], [0x35, 0xd0, 0x5b], [0x36, 0x80, 0x00],
+  [0x37, 0xf0, 0x00], [0x38, 0x10, 0x77], [0x39, 0x80, 0x00],
   [0x80, 0x30, 0xf0], [0x81, 0x60, 0xf0], [0x82, 0xe0, 0x00],
   [0xc7, 0xd0, 0x80], [0xc8, 0xd0, 0x80], [0xc9, 0xe0, 0x00],
   [0x5b, 0xd0, 0xc7], [0x5c, 0xd0, 0x80], [0x5d, 0xe0, 0x00],
@@ -599,7 +645,7 @@ export const CALL_PROGRAM = {
   n: Array.from({ length: 256 }, (_, a) => CALL_CODE.find(([x]) => x === a)?.[2] ?? 0),
 };
 /** Тактов в проверке «Подпрограмм»: вся программа до HLT и ещё немного стоя. */
-export const CALL_CLOCKS = 80;
+export const CALL_CLOCKS = 100;
 /** Плата «Подпрограмм» — больше, чем у «Длинных программ»: добавились стек, его ОЗУ и второй декодер. */
 export const CALL_BOARD = { cols: 64, rows: 48 };
 
@@ -618,6 +664,49 @@ function callCheck(scene: Scene): LessonStep[] {
     return [{ text: `В EEPROM — программа из описания (${!opE ? "не нашлось EEPROM с кодами операций" : "не нашлось EEPROM с числами"}): сейчас ${ee.map(show).join("; ")}`, ok: false }];
   }
   return [{ text: "В EEPROM — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2Emulate(CALL_PROGRAM, k, 8, 8), hex, MEM_FILL, CALL_CLOCKS)];
+}
+
+/**
+ * Программа «Регистров»: сначала LDI R3, 5A и OUT R3 — выход меняется на 5-м такте (сбой номера такта
+ * после RST сдвигает его); дальше 13 × 3 сложением в подпрограмме (сумма — R2, счётчик — R1, 13 — R15 и в
+ * ОЗУ по A5), потом R12: 5A + 0D, + 98 = FF, + 1 = 00 с переносом (JC, JZ по R12), вывод R15 и R2 —
+ * их не задели, SUB R15 до нуля, JZ по R15, вывод R1 (0), стоп. Номера регистров 1, 2, 3, 12, 15 —
+ * каждый бит номера и 0, и 1. За HLT — LDI R0, 77 и OUT R0.
+ */
+const REGS_CODE: [number, number, number][] = [
+  [0x00, 0x13, 0x5a], [0x01, 0x83, 0x00],
+  [0x02, 0x11, 0x03], [0x03, 0x12, 0x00], [0x04, 0x1f, 0x0d], [0x05, 0x3f, 0xa5], [0x06, 0xd0, 0x80], [0x07, 0xc1, 0x06], [0x08, 0x82, 0x00],
+  [0x09, 0x1c, 0x5a], [0x0a, 0x6c, 0xa5], [0x0b, 0x8c, 0x00], [0x0c, 0x4c, 0x98], [0x0d, 0x8c, 0x00], [0x0e, 0x4c, 0x01], [0x0f, 0xa0, 0x12], [0x10, 0xf0, 0x00],
+  [0x12, 0xbc, 0x15], [0x13, 0xf0, 0x00], [0x15, 0x8f, 0x00], [0x16, 0x82, 0x00], [0x17, 0x7f, 0xa5], [0x18, 0xbf, 0x1a], [0x19, 0xf0, 0x00],
+  [0x1a, 0x81, 0x00], [0x1b, 0xf0, 0x00], [0x1c, 0x10, 0x77], [0x1d, 0x80, 0x00],
+  [0x80, 0x62, 0xa5], [0x81, 0x51, 0x01], [0x82, 0xe0, 0x00],
+];
+export const REGS_PROGRAM = {
+  op: Array.from({ length: 256 }, (_, a) => REGS_CODE.find(([x]) => x === a)?.[1] ?? 0),
+  n: Array.from({ length: 256 }, (_, a) => REGS_CODE.find(([x]) => x === a)?.[2] ?? 0),
+};
+/**
+ * Тактов в проверке «Регистров»: 36 команд по три такта и ещё немного стоя. Не кратно трём: RST
+ * посреди работы приходит не в нулевом такте команды.
+ */
+export const REGS_CLOCKS = 116;
+export const REGS_BOARD = { cols: 72, rows: 52 };
+
+/** Проверка «Регистров»: как «Подпрограммы», ОЗУ — три (данные, стек, регистры). */
+function regsCheck(scene: Scene): LessonStep[] {
+  const ee = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === EEPROM_ID);
+  const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+  const is = (c: (typeof ee)[number], want: number[]) => want.every((w, a) => eepromWord(c.data, a) === w);
+  const rams = scene.components.filter((c) => c.type === "chip" && c.def === SRAM_ID).length;
+  if (rams < 3) return [{ text: `На плате три ОЗУ HM62256B — данные, стек и регистры: сейчас ${rams}`, ok: false }];
+  if (ee.length < 4) return [{ text: `На плате четыре EEPROM AT28C256: коды операций, числа и два — декодер; сейчас ${ee.length}`, ok: false }];
+  const opE = ee.find((c) => is(c, REGS_PROGRAM.op));
+  const nE = ee.find((c) => c !== opE && is(c, REGS_PROGRAM.n));
+  if (!opE || !nE) {
+    const show = (c: (typeof ee)[number]) => `${c.id}: ${REGS_CODE.map(([a]) => `${hex(a)} → ${hex(eepromWord(c.data, a))}`).join(", ")}`;
+    return [{ text: `В EEPROM — программа из описания (${!opE ? "не нашлось EEPROM с кодами операций" : "не нашлось EEPROM с числами"}): сейчас ${ee.map(show).join("; ")}`, ok: false }];
+  }
+  return [{ text: "В EEPROM — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2rEmulate(REGS_PROGRAM, k), hex, MEM_FILL, REGS_CLOCKS)];
 }
 
 /**
@@ -1464,6 +1553,37 @@ export const PROJECTS: Lesson[] = [
     ],
     start: () => cpuBench("proj-call", CALL_BOARD),
     check: callCheck,
+  },
+  {
+    id: "proj-regs",
+    project: true,
+    after: "proj-call",
+    title: "Регистры",
+    about: `«Подпрограммы», но вместо одного A — шестнадцать регистров R0…R15: номер r — младшая тетрада байта кода (биты 11…8 слова), и всё, что команда делала с A, она делает с Rr. LDI r, n: Rr ← n; LD r, n: Rr ← RAM[n]; ST r, n: RAM[n] ← Rr; ADDI, SUBI, ADD, SUB — Rr ← Rr ± n (± RAM[n]), флаг C; OUT r: выход ← Rr; JZ r, n и JNZ r, n смотрят, равен ли нулю Rr. JMP, JC, CALL, RET, HLT номер не смотрят. Коды — прежние: 0 NOP, 1 LDI, 2 LD, 3 ST, 4 ADDI, 5 SUBI, 6 ADD, 7 SUB, 8 OUT, 9 JMP, A JC, B JZ, C JNZ, D CALL, E RET, F HLT. Регистры — в третьем ОЗУ HM62256B (адрес — r), после включения в них мусор. Каждая команда — три такта: 1) A ← Rr; 2) действие над A, как раньше (OUT — тоже здесь); 3) Rr ← A, счётчик команд — дальше или переход, стек при CALL и RET. Номер такта — у декодера на адресе, вместе с кодом операции и флагами. Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT7 — J6…J13. Программа проверки (адрес → байт кода и число, остальные адреса пустые): ${REGS_CODE.map(([a, o, n]) => [a, o, n].map((w) => w.toString(16).toUpperCase().padStart(2, "0")).join(" ").replace(" ", " → ")).join(", ")}. Проверка сверяет программу, смотрит висящие входы и выводы питания, медь и спор на шине, жмёт RST и ${REGS_CLOCKS} раз CLK, потом RST посреди работы. Выход — в шестнадцатеричном виде.`,
+    hints: [
+      "Номер такта меняется каждый такт, а в начале команды должен снова стать 0. Какая из уже знакомых микросхем умеет и считать, и по сигналу загрузить ноль — и кто знает, что команда кончилась?",
+      "Регистры, ОЗУ данных и A пишут и читают через одни и те же провода данных. Кто в каждом из трёх тактов выводит на них, а кто молчит?",
+    ],
+    kit: [
+      chip("cnt161", 3),
+      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 4 },
+      { part: "other", type: "chip", tool: `chip:${SRAM_ID}`, preset: { smd: true }, match: { def: SRAM_ID }, label: "ОЗУ HM62256B", count: 3 },
+      chip("slice4a", 2),
+      chip("reg173"),
+      chip("add4", 3),
+      chip("mux4q", 5),
+      chip("buf8z", 2),
+      chip("xor", 8),
+      chip("or", 9),
+      chip("nor"),
+      chip("dffr"),
+      chip("mux"),
+      chip("not", 2),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 8 },
+      { part: "resistor", ohms: 1000, count: 8 },
+    ],
+    start: () => cpuBench("proj-regs", REGS_BOARD),
+    check: regsCheck,
   },
   {
     id: "proj-m32",
