@@ -149,6 +149,7 @@ const PLACE: Record<string, [number, number]> = {
   "proj-mem": [11, 10.8],
   "proj-long": [11, 12],
   "proj-m32": [12, 12],
+  "proj-call": [11, 13.2],
   slice: [7, 3.6],
   slice2: [7, 2.4],
 };
