@@ -1518,6 +1518,59 @@ export const PROJECTS: Lesson[] = [
     check: cpu8Check,
   },
   {
+    id: "proj-boot",
+    project: true,
+    after: "proj-cpu",
+    title: "Загрузчик",
+    about:
+      "Тот же четырёхразрядный процессор, но команды он берёт не из ПЗУ, а из ОЗУ HM62256B — как настоящие компьютеры. Программа хранится в EEPROM AT28C256 (без питания не пропадает), а ОЗУ после включения полно мусора. Поэтому после RST сначала идёт загрузка: 16 тактов CLK — по одному на адрес 0…15 — байт из EEPROM переписывается в ОЗУ по тому же адресу; выход в это время — 0, и команды не исполняются. На 17-м такте процессор начинает работать: адрес 0, 1, 2… — и команды из ОЗУ, как у четырёхразрядного (бит 7 — переход на N, бит 6 — вывести A, бит 5 — записать в A, бит 4 — A + N). Плата двусторонняя под SMD: CLK — J3, RST — J5, питание — J1 (общий) и J2 (+5 В), выход OUT0…OUT3 — J6…J9. Программа в EEPROM: 0 → 3A (A ← A + 10), 1 → 35, 2 → 71, 3 → 3E, 4 → 65, 5 → 8F, 15 → C1, остальные — 00. Проверка сверяет EEPROM, смотрит, что ни один вход не висит и медь не задевает чужую, жмёт RST и 16 раз CLK (выход должен остаться 0), потом стирает EEPROM — дальше работать можно только из ОЗУ — и ещё 24 раза CLK, сверяя выход; потом возвращает EEPROM, жмёт RST посреди работы и проверяет, что загрузка и запуск повторились. Всё это время на каждую цепь должна выводить только одна микросхема.",
+    hints: [
+      "Процессор берёт команды с одной шины данных. Кто выставляет на неё байт во время загрузки и кто — во время работы? Кому надо помнить, что загрузка уже закончилась, и по какому сигналу счётчика это узнать?",
+      "Во время загрузки на шине — байты программы, то есть команды. Что не даст процессору их исполнить? И в какой половине такта писать в ОЗУ, чтобы адрес в этот момент уже не менялся?",
+    ],
+    kit: [
+      chip("cnt161"),
+      chip("reg173", 2),
+      chip("add4"),
+      chip("mux4q"),
+      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 1 },
+      { part: "other", type: "chip", tool: `chip:${SRAM_ID}`, preset: { smd: true }, match: { def: SRAM_ID }, label: "ОЗУ HM62256B", count: 1 },
+      chip("dffr"),
+      chip("nand", 3),
+      chip("or", 2),
+      chip("not", 2),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 4 },
+      { part: "resistor", ohms: 1000, count: 4 },
+    ],
+    start: () => cpuBench("proj-boot", BOOT_BOARD),
+    check(scene) {
+      const ee = scene.components.find((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === EEPROM_ID);
+      const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+      const words = BOOT_PROGRAM.map((_, a) => eepromWord(ee?.data, a));
+      if (!ee || !BOOT_PROGRAM.every((w, a) => words[a] === w)) return [{ text: ee ? `В EEPROM — программа из описания: сейчас ${words.map((w, a) => `${a} → ${hex(w)}`).join(", ")}` : "На плате EEPROM AT28C256", ok: false }];
+      const cut = noPowerSteps(floatingInputs(scene));
+      if (cut) return [{ text: "В EEPROM — программа из описания", ok: true }, ...cut];
+      const { boot, outs, again, fights, hurt } = bootRun(scene);
+      const want = cpuEmulate(BOOT_PROGRAM, CPU_CLOCKS);
+      const bad = outs.findIndex((o, i) => o !== want[i]);
+      const wantAgain = [...Array(BOOT_CLOCKS).fill(0), ...cpuEmulate(BOOT_PROGRAM, 6)];
+      const badAgain = again.findIndex((o, i) => o !== wantAgain[i]);
+      const floating = floatingInputs(scene);
+      const shorts = foreignContacts(scene);
+      const shortName = (k: (typeof shorts)[number]) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`;
+      return [
+        { text: "В EEPROM — программа из описания", ok: true },
+        { text: floating.length ? `Выводы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы и выводы питания микросхем куда-то подключены", ok: !floating.length },
+        { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
+        { text: fights.length ? `Две микросхемы выводят на одну цепь разом: ${fights.slice(0, 3).join("; ")}${fights.length > 3 ? ` и ещё ${fights.length - 3}` : ""}` : "На каждую цепь выводит только одна микросхема", ok: !fights.length },
+        { text: `Загрузка — 16 тактов после RST, выход 0: ${boot.join(" ")}`, ok: boot.every((o) => o === 0) },
+        { text: `EEPROM стёрта — работа из ОЗУ, такт за тактом: ${outs.join(" ")}${bad >= 0 ? ` (на ${bad + 1}-м такте нужно ${want[bad]})` : ""}`, ok: bad < 0 },
+        { text: `RST посреди работы — снова загрузка и запуск: ${again.join(" ")}${badAgain >= 0 ? ` (нужно ${wantAgain.join(" ")})` : ""}`, ok: badAgain < 0 },
+        noHurt([...hurt]),
+      ];
+    },
+  },
+  {
     id: "proj-cpu8m",
     project: true,
     after: "proj-cpu8",
@@ -1538,6 +1591,28 @@ export const PROJECTS: Lesson[] = [
     ],
     start: () => cpuBench("proj-cpu8m", CPU8_BOARD),
     check: cpu8Check,
+  },
+  {
+    id: "proj-cpu32",
+    project: true,
+    after: "proj-cpu8m",
+    title: "Процессор 32 бит",
+    about:
+      "Тот же процессор, но числа — тридцатидвухразрядные (0…4 294 967 295): регистр A, сумматор и выход по 32 бита, перенос за старший разряд теряется. Всё, что работает с числами, — на восьми ваших модулях «Срез». Команда — 40 бит по одному адресу в пяти ПЗУ 74S288: в четырёх — число N по байтам (байт 0 — младший), в пятом — что делать, биты 7…4 как у восьмиразрядного (бит 7 — перейти на адрес N mod 16, бит 6 — вывести A, бит 5 — записать в A, бит 4 — записывается A + N, иначе само N), младшие — 0. Адресов по-прежнему 16. Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT31 — площадки J6…J37 (OUT0 — младший). Программа проверки — числа N: 0 → A5A5A5A5, 1 → 5A5A5A5A, 2 → 00000001, 3 → FFFFFFFE, 4 → 5A5A5A5A, 5 → 0000000F, 15 → 00000001, остальные — 0 (по байтам: в ПЗУ байта 0 — A5, 5A, 01, FE, 5A, 0F, …, 01; в ПЗУ байтов 1, 2 и 3 — A5, 5A, 00, FF, 5A, 00, …, 00); команды — как у восьмиразрядного: 0 → 20, 1 → 30, 2 → 70, 3 → 30, 4 → 60, 5 → 80, 15 → C0, остальные — 00. Проверка та же: висящие входы, медь, RST, 24 такта CLK, RST посреди работы. Выход — в шестнадцатеричном виде.",
+    hints: [
+      "Восемь модулей — восемь одинаковых кусков по 4 бита. Какие выводы разъёма у всех восьми общие, а какие у каждого свои? Сколько проводов уходит к каждому ПЗУ чисел?",
+      "Перенос идёт по цепочке от младшего модуля к старшему. Сколько ему нужно пройти, чтобы FFFFFFFF + 1 стало нулём, — и что будет, если где-то в цепочке он оборвётся?",
+    ],
+    kit: [
+      chip("cnt161"),
+      { part: "other", type: "chip", tool: `chip:${PROM_ID}`, preset: {}, match: { def: PROM_ID }, label: "ПЗУ 74S288", count: 5 },
+      chip("slice4", 8),
+      chip("not", 4),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 32 },
+      { part: "resistor", ohms: 1000, count: 32 },
+    ],
+    start: () => cpuBench("proj-cpu32", CPU32_BOARD),
+    check: cpu32Check,
   },
   {
     id: "proj-dec",
@@ -1648,6 +1723,36 @@ export const PROJECTS: Lesson[] = [
     ],
     start: () => cpuBench("proj-long", CPU8_BOARD),
     check: longCheck,
+  },
+  {
+    id: "proj-m32",
+    project: true,
+    after: "proj-long",
+    title: "М2 на 32 бита",
+    about:
+      "Тот же процессор М2 с длинными программами, но числа — тридцатидвухразрядные: A, сложение и вычитание (флаг C — перенос за старший, 32-й разряд), выход и ячейки ОЗУ — по 32 бита. Число N в команде — 32 бита: по байту в четырёх EEPROM AT28C256 (байт 0 — младший), код операции — в пятой, декодер — в шестой. Адрес перехода и адрес в ОЗУ — младший байт N (0…255). ОЗУ — четыре HM62256B, по байту каждого числа; после включения в них мусор. JZ и JNZ смотрят, равны ли нулю все 32 разряда A. Команды и коды — как в «Длинных программах»: 0 NOP, 1 LDI, 2 LD, 3 ST, 4 ADDI, 5 SUBI, 6 ADD, 7 SUB, 8 OUT, 9 JMP, A JC, B JZ, C JNZ, F HLT. Числа — на восьми ваших модулях «Срез 2». Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT31 — J6…J37. Программа проверки (адрес → код и число N, остальные адреса пустые): 00 → 10 A5A5A5A5, 01 → 30 000000A5, 02 → 10 5A5A5A5A, 03 → 30 0000005A, 04 → 90 000000AB, AB → 20 000000A5, AC → 60 0000005A, AD → 80 00000000, AE → 40 00000001, AF → A0 000000B1, B0 → F0 00000000, B1 → B0 000000B3, B2 → F0 00000000, B3 → 70 0000005A, B4 → 80 00000000, B5 → C0 0000005A, B6 → F0 00000000, 5A → 50 A5A5A5A6, 5B → B0 0000005D, 5C → F0 00000000, 5D → 80 00000000, 5E → F0 00000002, 5F → 10 00000077, 60 → 80 00000000. Проверка сверяет программу, смотрит висящие входы и выводы питания, медь и спор на шине, жмёт RST, 24 раза CLK и RST посреди работы. Выход — в шестнадцатеричном виде.",
+    hints: [
+      "Что в «Длинных программах» было одно на 8 разрядов, а теперь нужно на каждый байт? И что так и остаётся одним на всю машину?",
+      "«A = 0» — теперь 32 разряда. Сколько двухвходовых вентилей нужно, чтобы свести их к одному сигналу, и как их выстроить, чтобы сигнал проходил через как можно меньше вентилей подряд?",
+    ],
+    kit: [
+      chip("cnt161", 2),
+      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 6 },
+      { part: "other", type: "chip", tool: `chip:${SRAM_ID}`, preset: { smd: true }, match: { def: SRAM_ID }, label: "ОЗУ HM62256B", count: 4 },
+      chip("slice4a", 8),
+      chip("mux4q", 8),
+      chip("buf8z", 4),
+      chip("xor", 32),
+      chip("or", 31),
+      chip("nor"),
+      chip("dffr"),
+      chip("mux"),
+      chip("not", 2),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 32 },
+      { part: "resistor", ohms: 1000, count: 32 },
+    ],
+    start: () => cpuBench("proj-m32", CPU32_BOARD),
+    check: m32Check,
   },
   {
     id: "proj-call",
@@ -1802,110 +1907,5 @@ export const PROJECTS: Lesson[] = [
     ],
     start: () => cpuBench("proj-shift", REGS_BOARD),
     check: shiftCheck,
-  },
-  {
-    id: "proj-m32",
-    project: true,
-    after: "proj-long",
-    title: "М2 на 32 бита",
-    about:
-      "Тот же процессор М2 с длинными программами, но числа — тридцатидвухразрядные: A, сложение и вычитание (флаг C — перенос за старший, 32-й разряд), выход и ячейки ОЗУ — по 32 бита. Число N в команде — 32 бита: по байту в четырёх EEPROM AT28C256 (байт 0 — младший), код операции — в пятой, декодер — в шестой. Адрес перехода и адрес в ОЗУ — младший байт N (0…255). ОЗУ — четыре HM62256B, по байту каждого числа; после включения в них мусор. JZ и JNZ смотрят, равны ли нулю все 32 разряда A. Команды и коды — как в «Длинных программах»: 0 NOP, 1 LDI, 2 LD, 3 ST, 4 ADDI, 5 SUBI, 6 ADD, 7 SUB, 8 OUT, 9 JMP, A JC, B JZ, C JNZ, F HLT. Числа — на восьми ваших модулях «Срез 2». Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT31 — J6…J37. Программа проверки (адрес → код и число N, остальные адреса пустые): 00 → 10 A5A5A5A5, 01 → 30 000000A5, 02 → 10 5A5A5A5A, 03 → 30 0000005A, 04 → 90 000000AB, AB → 20 000000A5, AC → 60 0000005A, AD → 80 00000000, AE → 40 00000001, AF → A0 000000B1, B0 → F0 00000000, B1 → B0 000000B3, B2 → F0 00000000, B3 → 70 0000005A, B4 → 80 00000000, B5 → C0 0000005A, B6 → F0 00000000, 5A → 50 A5A5A5A6, 5B → B0 0000005D, 5C → F0 00000000, 5D → 80 00000000, 5E → F0 00000002, 5F → 10 00000077, 60 → 80 00000000. Проверка сверяет программу, смотрит висящие входы и выводы питания, медь и спор на шине, жмёт RST, 24 раза CLK и RST посреди работы. Выход — в шестнадцатеричном виде.",
-    hints: [
-      "Что в «Длинных программах» было одно на 8 разрядов, а теперь нужно на каждый байт? И что так и остаётся одним на всю машину?",
-      "«A = 0» — теперь 32 разряда. Сколько двухвходовых вентилей нужно, чтобы свести их к одному сигналу, и как их выстроить, чтобы сигнал проходил через как можно меньше вентилей подряд?",
-    ],
-    kit: [
-      chip("cnt161", 2),
-      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 6 },
-      { part: "other", type: "chip", tool: `chip:${SRAM_ID}`, preset: { smd: true }, match: { def: SRAM_ID }, label: "ОЗУ HM62256B", count: 4 },
-      chip("slice4a", 8),
-      chip("mux4q", 8),
-      chip("buf8z", 4),
-      chip("xor", 32),
-      chip("or", 31),
-      chip("nor"),
-      chip("dffr"),
-      chip("mux"),
-      chip("not", 2),
-      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 32 },
-      { part: "resistor", ohms: 1000, count: 32 },
-    ],
-    start: () => cpuBench("proj-m32", CPU32_BOARD),
-    check: m32Check,
-  },
-  {
-    id: "proj-cpu32",
-    project: true,
-    after: "proj-cpu8m",
-    title: "Процессор 32 бит",
-    about:
-      "Тот же процессор, но числа — тридцатидвухразрядные (0…4 294 967 295): регистр A, сумматор и выход по 32 бита, перенос за старший разряд теряется. Всё, что работает с числами, — на восьми ваших модулях «Срез». Команда — 40 бит по одному адресу в пяти ПЗУ 74S288: в четырёх — число N по байтам (байт 0 — младший), в пятом — что делать, биты 7…4 как у восьмиразрядного (бит 7 — перейти на адрес N mod 16, бит 6 — вывести A, бит 5 — записать в A, бит 4 — записывается A + N, иначе само N), младшие — 0. Адресов по-прежнему 16. Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT31 — площадки J6…J37 (OUT0 — младший). Программа проверки — числа N: 0 → A5A5A5A5, 1 → 5A5A5A5A, 2 → 00000001, 3 → FFFFFFFE, 4 → 5A5A5A5A, 5 → 0000000F, 15 → 00000001, остальные — 0 (по байтам: в ПЗУ байта 0 — A5, 5A, 01, FE, 5A, 0F, …, 01; в ПЗУ байтов 1, 2 и 3 — A5, 5A, 00, FF, 5A, 00, …, 00); команды — как у восьмиразрядного: 0 → 20, 1 → 30, 2 → 70, 3 → 30, 4 → 60, 5 → 80, 15 → C0, остальные — 00. Проверка та же: висящие входы, медь, RST, 24 такта CLK, RST посреди работы. Выход — в шестнадцатеричном виде.",
-    hints: [
-      "Восемь модулей — восемь одинаковых кусков по 4 бита. Какие выводы разъёма у всех восьми общие, а какие у каждого свои? Сколько проводов уходит к каждому ПЗУ чисел?",
-      "Перенос идёт по цепочке от младшего модуля к старшему. Сколько ему нужно пройти, чтобы FFFFFFFF + 1 стало нулём, — и что будет, если где-то в цепочке он оборвётся?",
-    ],
-    kit: [
-      chip("cnt161"),
-      { part: "other", type: "chip", tool: `chip:${PROM_ID}`, preset: {}, match: { def: PROM_ID }, label: "ПЗУ 74S288", count: 5 },
-      chip("slice4", 8),
-      chip("not", 4),
-      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 32 },
-      { part: "resistor", ohms: 1000, count: 32 },
-    ],
-    start: () => cpuBench("proj-cpu32", CPU32_BOARD),
-    check: cpu32Check,
-  },
-  {
-    id: "proj-boot",
-    project: true,
-    after: "proj-cpu",
-    title: "Загрузчик",
-    about:
-      "Тот же четырёхразрядный процессор, но команды он берёт не из ПЗУ, а из ОЗУ HM62256B — как настоящие компьютеры. Программа хранится в EEPROM AT28C256 (без питания не пропадает), а ОЗУ после включения полно мусора. Поэтому после RST сначала идёт загрузка: 16 тактов CLK — по одному на адрес 0…15 — байт из EEPROM переписывается в ОЗУ по тому же адресу; выход в это время — 0, и команды не исполняются. На 17-м такте процессор начинает работать: адрес 0, 1, 2… — и команды из ОЗУ, как у четырёхразрядного (бит 7 — переход на N, бит 6 — вывести A, бит 5 — записать в A, бит 4 — A + N). Плата двусторонняя под SMD: CLK — J3, RST — J5, питание — J1 (общий) и J2 (+5 В), выход OUT0…OUT3 — J6…J9. Программа в EEPROM: 0 → 3A (A ← A + 10), 1 → 35, 2 → 71, 3 → 3E, 4 → 65, 5 → 8F, 15 → C1, остальные — 00. Проверка сверяет EEPROM, смотрит, что ни один вход не висит и медь не задевает чужую, жмёт RST и 16 раз CLK (выход должен остаться 0), потом стирает EEPROM — дальше работать можно только из ОЗУ — и ещё 24 раза CLK, сверяя выход; потом возвращает EEPROM, жмёт RST посреди работы и проверяет, что загрузка и запуск повторились. Всё это время на каждую цепь должна выводить только одна микросхема.",
-    hints: [
-      "Процессор берёт команды с одной шины данных. Кто выставляет на неё байт во время загрузки и кто — во время работы? Кому надо помнить, что загрузка уже закончилась, и по какому сигналу счётчика это узнать?",
-      "Во время загрузки на шине — байты программы, то есть команды. Что не даст процессору их исполнить? И в какой половине такта писать в ОЗУ, чтобы адрес в этот момент уже не менялся?",
-    ],
-    kit: [
-      chip("cnt161"),
-      chip("reg173", 2),
-      chip("add4"),
-      chip("mux4q"),
-      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 1 },
-      { part: "other", type: "chip", tool: `chip:${SRAM_ID}`, preset: { smd: true }, match: { def: SRAM_ID }, label: "ОЗУ HM62256B", count: 1 },
-      chip("dffr"),
-      chip("nand", 3),
-      chip("or", 2),
-      chip("not", 2),
-      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 4 },
-      { part: "resistor", ohms: 1000, count: 4 },
-    ],
-    start: () => cpuBench("proj-boot", BOOT_BOARD),
-    check(scene) {
-      const ee = scene.components.find((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === EEPROM_ID);
-      const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
-      const words = BOOT_PROGRAM.map((_, a) => eepromWord(ee?.data, a));
-      if (!ee || !BOOT_PROGRAM.every((w, a) => words[a] === w)) return [{ text: ee ? `В EEPROM — программа из описания: сейчас ${words.map((w, a) => `${a} → ${hex(w)}`).join(", ")}` : "На плате EEPROM AT28C256", ok: false }];
-      const cut = noPowerSteps(floatingInputs(scene));
-      if (cut) return [{ text: "В EEPROM — программа из описания", ok: true }, ...cut];
-      const { boot, outs, again, fights, hurt } = bootRun(scene);
-      const want = cpuEmulate(BOOT_PROGRAM, CPU_CLOCKS);
-      const bad = outs.findIndex((o, i) => o !== want[i]);
-      const wantAgain = [...Array(BOOT_CLOCKS).fill(0), ...cpuEmulate(BOOT_PROGRAM, 6)];
-      const badAgain = again.findIndex((o, i) => o !== wantAgain[i]);
-      const floating = floatingInputs(scene);
-      const shorts = foreignContacts(scene);
-      const shortName = (k: (typeof shorts)[number]) => `${k.trace} × ${"trace" in k.other ? k.other.trace : holeLabel(k.other.hole)}`;
-      return [
-        { text: "В EEPROM — программа из описания", ok: true },
-        { text: floating.length ? `Выводы висят в воздухе (ни к чему не подключены): ${floating.join(", ")}` : "Все входы и выводы питания микросхем куда-то подключены", ok: !floating.length },
-        { text: shorts.length ? `Медь задевает чужую — цепи замкнуты: ${shorts.slice(0, 4).map(shortName).join("; ")}${shorts.length > 4 ? ` и ещё ${shorts.length - 4}` : ""}` : "Дорожки не задевают чужую медь", ok: !shorts.length },
-        { text: fights.length ? `Две микросхемы выводят на одну цепь разом: ${fights.slice(0, 3).join("; ")}${fights.length > 3 ? ` и ещё ${fights.length - 3}` : ""}` : "На каждую цепь выводит только одна микросхема", ok: !fights.length },
-        { text: `Загрузка — 16 тактов после RST, выход 0: ${boot.join(" ")}`, ok: boot.every((o) => o === 0) },
-        { text: `EEPROM стёрта — работа из ОЗУ, такт за тактом: ${outs.join(" ")}${bad >= 0 ? ` (на ${bad + 1}-м такте нужно ${want[bad]})` : ""}`, ok: bad < 0 },
-        { text: `RST посреди работы — снова загрузка и запуск: ${again.join(" ")}${badAgain >= 0 ? ` (нужно ${wantAgain.join(" ")})` : ""}`, ok: badAgain < 0 },
-        noHurt([...hurt]),
-      ];
-    },
   },
 ];
