@@ -7,13 +7,14 @@
 import type { Component, Endpoint, Scene } from "../src/model/types";
 import { applyBoards } from "../src/model/breadboard";
 import { EEPROM_ID, SRAM_ID } from "../src/chips/memory";
-import { CPU_PINS, CPU8_OUT, LOGIC_PROGRAM, PROJECTS, REGS_PROGRAM, RR_PROGRAM } from "../src/career/projects";
+import { CPU_PINS, CPU8_OUT, LOGIC_PROGRAM, PROJECTS, REGS_PROGRAM, RR_PROGRAM, SHIFT_PROGRAM } from "../src/career/projects";
 import { MICROCODE } from "./mem-build";
 import { P, allChips } from "./module-build";
 
 export const proj = PROJECTS.find((p) => p.id === "proj-regs")!;
 export const projRR = PROJECTS.find((p) => p.id === "proj-rr")!;
 export const projLogic = PROJECTS.find((p) => p.id === "proj-logic")!;
+export const projShift = PROJECTS.find((p) => p.id === "proj-shift")!;
 const f = { mode: "free" as const, x: 0, z: 0, rot: 0 };
 const chip = (id: string, ref: string, data?: number[]): Component => {
   const d = allChips[ref];
@@ -82,16 +83,26 @@ export const OPERAND_TABLE = Array.from({ length: 32768 }, (_, x) => {
   return sub ? 15 - v : v;
 });
 
+/**
+ * «Сдвиг»: второй такт кода 0 при f = 7 — A ← B (DA: MEM = SUB = 1), RET = 1 (BF): режим 111, которого
+ * таблица не знает, ловят два И и переключают 74HC157 перед модулями на A, сдвинутый вправо.
+ */
+const shiftAt = (a: number) => (a & 15) === 0 && ((a >> 6) & 3) === 1 && a >> 8 === 7;
+export const SHIFT_MICROCODE = LOGIC_MICROCODE.map((w, a) => (shiftAt(a) ? 0xda : w));
+export const SHIFT_STACK = LOGIC_STACK.map((w, a) => (shiftAt(a) ? 0xbf : w));
+
 /** rr — «Регистр с регистром»: адрес ОЗУ регистров — 74HC157 (r, во втором такте — s из N), f — на декодер. */
-export function regs(microcode?: number[], stack?: number[], mutate: (w: [Endpoint, Endpoint][]) => [Endpoint, Endpoint][] = (w) => w, rr = false, logic = false): Scene {
+export function regs(microcode?: number[], stack?: number[], mutate: (w: [Endpoint, Endpoint][]) => [Endpoint, Endpoint][] = (w) => w, rr = false, logic = false, shift = false): Scene {
+  logic ||= shift;
   rr ||= logic;
-  microcode ??= logic ? LOGIC_MICROCODE : rr ? RR_MICROCODE : REGS_MICROCODE;
-  stack ??= logic ? LOGIC_STACK : rr ? RR_STACK : REGS_STACK;
-  const prog = logic ? LOGIC_PROGRAM : rr ? RR_PROGRAM : REGS_PROGRAM;
+  microcode ??= shift ? SHIFT_MICROCODE : logic ? LOGIC_MICROCODE : rr ? RR_MICROCODE : REGS_MICROCODE;
+  stack ??= shift ? SHIFT_STACK : logic ? LOGIC_STACK : rr ? RR_STACK : REGS_STACK;
+  const prog = shift ? SHIFT_PROGRAM : logic ? LOGIC_PROGRAM : rr ? RR_PROGRAM : REGS_PROGRAM;
   const plus: Endpoint = { comp: "G1", pin: 1 }, minus: Endpoint = { comp: "G1", pin: 0 };
   const CLK: Endpoint = { hole: CPU_PINS.clk }, RST: Endpoint = { hole: CPU_PINS.rst };
   const xors = logic ? [] : Array.from({ length: 8 }, (_, k) => `X${k}`);
-  const gates = ["N1", "N2", "O1", "O2", "O3", ...Array.from({ length: 6 }, (_, k) => `Z${k}`), "ZN", ...xors];
+  const ands = shift ? ["AN0", "AN1"] : [];
+  const gates = ["N1", "N2", "O1", "O2", "O3", ...Array.from({ length: 6 }, (_, k) => `Z${k}`), "ZN", ...xors, ...ands];
   const comps: Component[] = [
     chip("PC", "ref:hc161"), chip("PH", "ref:hc161"), chip("SC", "ref:hc161"), chip("RO", EEPROM_ID, prog.op), chip("RN", EEPROM_ID, prog.n), ...(rr ? [chip("MR", "ref:hc157")] : []), chip("RR", SRAM_ID),
     chip("DE", EEPROM_ID, microcode), chip("DS", EEPROM_ID, stack), chip("RM", SRAM_ID), chip("RS", SRAM_ID),
@@ -100,10 +111,12 @@ export function regs(microcode?: number[], stack?: number[], mutate: (w: [Endpoi
     chip("FC", "ref:dffr"), chip("MC", "ref:mux"),
     chip("N1", "ref:not-cmos"), chip("N2", "ref:not-cmos"), chip("O1", "ref:or"), chip("O2", "ref:or"), chip("O3", "ref:or"), ...Array.from({ length: 6 }, (_, k) => chip(`Z${k}`, "ref:or")), chip("ZN", "ref:nor-cmos"),
     ...xors.map((id) => chip(id, "ref:xor")),
+    ...ands.map((id) => chip(id, "ref:and")),
+    ...(shift ? [chip("SH0", "ref:hc157"), chip("SH1", "ref:hc157")] : []),
     ...[0, 1].map((s): Component => ({ id: `M${s}`, type: "chip", def: "ref:slice2", name: "Срез 2", package: "SIP", pins: 24, placement: f }) as Component),
   ];
   const w: [Endpoint, Endpoint][] = [];
-  for (const id of [...(rr ? ["MR"] : []), "SC", "PC", "PH", ...(logic ? [] : ["MA", "MB"]), "MS", "ML", "MH", "SP", "AS", "I0", "I1"]) w.push([plus, P(id, 16)], [minus, P(id, 8)]);
+  for (const id of [...(rr ? ["MR"] : []), "SC", "PC", "PH", ...(logic ? [] : ["MA", "MB"]), ...(shift ? ["SH0", "SH1"] : []), "MS", "ML", "MH", "SP", "AS", "I0", "I1"]) w.push([plus, P(id, 16)], [minus, P(id, 8)]);
   for (const id of [...(logic ? ["AL", "AH"] : []), "DE", "DS", "RM", "RS", "RR", "RO", "RN"]) w.push([plus, P(id, 28)], [minus, P(id, 14)]);
   for (const id of ["BF", "BS"]) w.push([plus, P(id, 20)], [minus, P(id, 10)]);
   for (const id of gates) w.push([plus, P(id, 5)], [minus, P(id, 3)]);
@@ -169,6 +182,16 @@ export function regs(microcode?: number[], stack?: number[], mutate: (w: [Endpoi
       w.push([minus, P(t, 20)], [minus, P(t, 22)], [plus, P(t, 27)]);
       for (let k = 0; k < 4; k++) bIn.push(P(t, IO28[k]));
     }
+    if (shift) {
+      // Режим 111 (RET, SUB, MEM) — сдвиг: 74HC157 выбирают A, сдвинутый вправо, вместо таблиц
+      w.push([RET, P("AN0", 1)], [SUB, P("AN0", 2)], [P("AN0", 4), P("AN1", 1)], [MEM, P("AN1", 2)]);
+      for (let k = 0; k < 8; k++) {
+        const m = k < 4 ? "SH0" : "SH1", [i0, i1, y] = MUXC[k & 3];
+        w.push([bIn[k], P(m, i0)], [k < 7 ? aBit(k + 1) : minus, P(m, i1)]);
+        bIn[k] = P(m, y);
+      }
+      for (const m of ["SH0", "SH1"]) w.push([P("AN1", 4), P(m, 1)], [minus, P(m, 15)]);
+    }
   } else {
     // Второе слагаемое: N или RAM[N]; потом XOR (вычитание)
     for (let k = 0; k < 8; k++) {
@@ -206,7 +229,7 @@ export function regs(microcode?: number[], stack?: number[], mutate: (w: [Endpoi
     w.push([SEL, P(m, 5)], [CLK, P(m, 6)], [RST, P(m, 7)], [nWA, P(m, 8)], [nWO, P(m, 9)], [minus, P(m, 10)], [plus, P(m, 24)]);
   }
   w.push([SUB, P("M0", 11)], [P("M0", 12), P("M1", 11)]);
-  const sc = (logic ? projLogic : rr ? projRR : proj).start();
+  const sc = (shift ? projShift : logic ? projLogic : rr ? projRR : proj).start();
   sc.components.push(...comps);
   sc.wires.push(...mutate(w).map(([a, b], i) => ({ id: `WX${i}`, a, b, color: "" })));
   sc.chips = allChips;

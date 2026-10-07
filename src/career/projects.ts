@@ -459,9 +459,10 @@ export function m2Emulate(prog: { op: number[]; n: number[] }, clocks: number, b
  * Rr ← A и переход (счётчик команд, стек — в третьем). OUT выводит Rr в конце второго такта.
  * Регистры — в ОЗУ: после включения в них fill. rr — команды «регистр с регистром» под кодом 0:
  * N = f · 16 + s; f = 0 MOV r, s (Rr ← Rs), 1 ADD r, s, 2 SUB r, s (флаг C), остальные — ничего;
- * logic — ещё f = 4 AND, 5 OR, 6 XOR (флаг C не трогают).
+ * logic — ещё f = 4 AND, 5 OR, 6 XOR (флаг C не трогают); shift — f = 7 SHR r (Rr ← Rr >> 1, s не
+ * смотрит, флаг C не трогает).
  */
-export function m2rEmulate(prog: { op: number[]; n: number[] }, clocks: number, fill = MEM_FILL, rr = false, logic = false): number[] {
+export function m2rEmulate(prog: { op: number[]; n: number[] }, clocks: number, fill = MEM_FILL, rr = false, logic = false, shift = false): number[] {
   const ram = new Map<number, number>();
   const reg = Array<number>(16).fill(fill);
   const stack: number[] = [];
@@ -485,6 +486,7 @@ export function m2rEmulate(prog: { op: number[]; n: number[] }, clocks: number, 
         else if (logic && n >> 4 === 4) a &= reg[n & 15];
         else if (logic && n >> 4 === 5) a |= reg[n & 15];
         else if (logic && n >> 4 === 6) a ^= reg[n & 15];
+        else if (shift && n >> 4 === 7) a >>= 1;
         break;
       case M2.LDI: a = n; break;
       case M2.LD: a = ram.get(n) ?? fill; break;
@@ -797,6 +799,40 @@ function logicCheck(scene: Scene): LessonStep[] {
     return [{ text: `В EEPROM — программа из описания (${!opE ? "не нашлось EEPROM с кодами операций" : "не нашлось EEPROM с числами"}): сейчас ${ee.map(show).join("; ")}`, ok: false }];
   }
   return [{ text: "В EEPROM — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2rEmulate(LOGIC_PROGRAM, k, MEM_FILL, true, true), hex, MEM_FILL, LOGIC_CLOCKS)];
+}
+
+/**
+ * Программа «Сдвига»: «Логика», а после вывода 97 — трижды SHR R10 (97 → 4B → 25 → 12: каждый разряд,
+ * который сдвигается, хоть раз 1 и хоть раз 0) и вывод 12.
+ */
+const SHIFT_CODE: [number, number, number][] = [
+  ...LOGIC_CODE.filter(([a]) => a < 0x42 || a > 0x4b),
+  [0x42, 0x0a, 0x70], [0x43, 0x0a, 0x70], [0x44, 0x0a, 0x70], [0x45, 0x8a, 0x00],
+  [0x46, 0x7f, 0xa5], [0x47, 0x6f, 0xa5], [0x48, 0x5f, 0x01], [0x49, 0xcf, 0x49], [0x4a, 0xbf, 0x4c], [0x4b, 0xf0, 0x00], [0x4c, 0x8f, 0x00],
+  [0x4d, 0xf0, 0x00], [0x4e, 0x1f, 0x77], [0x4f, 0x8f, 0x00],
+];
+export const SHIFT_PROGRAM = {
+  op: Array.from({ length: 256 }, (_, a) => SHIFT_CODE.find(([x]) => x === a)?.[1] ?? 0),
+  n: Array.from({ length: 256 }, (_, a) => SHIFT_CODE.find(([x]) => x === a)?.[2] ?? 0),
+};
+/** Тактов в проверке «Сдвига»: 39 команд по три такта и ещё немного стоя; не кратно трём. */
+export const SHIFT_CLOCKS = 125;
+
+/** Проверка «Сдвига»: как «Логика», своя программа. */
+function shiftCheck(scene: Scene): LessonStep[] {
+  const ee = scene.components.filter((c): c is Extract<Component, { type: "chip" }> => c.type === "chip" && c.def === EEPROM_ID);
+  const hex = (w: number) => w.toString(16).toUpperCase().padStart(2, "0");
+  const is = (c: (typeof ee)[number], want: number[]) => want.every((w, a) => eepromWord(c.data, a) === w);
+  const rams = scene.components.filter((c) => c.type === "chip" && c.def === SRAM_ID).length;
+  if (rams < 3) return [{ text: `На плате три ОЗУ HM62256B — данные, стек и регистры: сейчас ${rams}`, ok: false }];
+  if (ee.length < 4) return [{ text: `На плате EEPROM AT28C256: коды операций, числа и декодер — сейчас ${ee.length}`, ok: false }];
+  const opE = ee.find((c) => is(c, SHIFT_PROGRAM.op));
+  const nE = ee.find((c) => c !== opE && is(c, SHIFT_PROGRAM.n));
+  if (!opE || !nE) {
+    const show = (c: (typeof ee)[number]) => `${c.id}: ${SHIFT_CODE.map(([a]) => `${hex(a)} → ${hex(eepromWord(c.data, a))}`).join(", ")}`;
+    return [{ text: `В EEPROM — программа из описания (${!opE ? "не нашлось EEPROM с кодами операций" : "не нашлось EEPROM с числами"}): сейчас ${ee.map(show).join("; ")}`, ok: false }];
+  }
+  return [{ text: "В EEPROM — программа из описания", ok: true }, ...cpuSteps(scene, CPU8_OUT, (k) => m2rEmulate(SHIFT_PROGRAM, k, MEM_FILL, true, true, true), hex, MEM_FILL, SHIFT_CLOCKS)];
 }
 
 /**
@@ -1735,6 +1771,37 @@ export const PROJECTS: Lesson[] = [
     ],
     start: () => cpuBench("proj-logic", REGS_BOARD),
     check: logicCheck,
+  },
+  {
+    id: "proj-shift",
+    project: true,
+    after: "proj-logic",
+    title: "Сдвиг",
+    about: `«Логика» и ещё одна команда под кодом 0: f = 7 — SHR r: Rr ← Rr, сдвинутый на разряд вправо (в старший разряд — 0; s команда не смотрит, флаг C не трогает). Сдвиг влево уже есть: это ADD r, r. Остальное — как в «Логике»: f = 0 MOV, 1 ADD, 2 SUB, 4 AND, 5 OR, 6 XOR (r, s), 3 и 8…F — ничего; 1 LDI, 2 LD, 3 ST, 4 ADDI, 5 SUBI, 6 ADD, 7 SUB, 8 OUT, 9 JMP, A JC, B JZ, C JNZ, D CALL, E RET, F HLT; команда — три такта (A ← Rr; действие; Rr ← A и переход). Регистры, данные и стек — в ОЗУ HM62256B, после включения в них мусор. Плата двусторонняя под SMD: CLK — J3, RST — J5, питание 5 В — J1 (общий) и J2 (+5 В), выход OUT0…OUT7 — J6…J13. Программа проверки (адрес → байт кода и число, остальные адреса пустые): ${SHIFT_CODE.map(([a, o, n]) => [a, o, n].map((w) => w.toString(16).toUpperCase().padStart(2, "0")).join(" ").replace(" ", " → ")).join(", ")}. Проверка сверяет программу, смотрит висящие входы и выводы питания, медь и спор на шине, жмёт RST и ${SHIFT_CLOCKS} раз CLK, потом RST посреди работы. Выход — в шестнадцатеричном виде.`,
+    hints: [
+      "Таблица на тетраду видит только свои четыре бита A. Откуда младшей тетраде взять бит, который приходит в её старший разряд при сдвиге вправо?",
+      "Свободных линий у декодера нет, а у таблицы — адресов. Какие сочетания уже идущих сигналов режима ещё ни разу не встречаются?",
+    ],
+    kit: [
+      chip("cnt161", 3),
+      { part: "other", type: "chip", tool: `chip:${EEPROM_ID}`, preset: { smd: true }, match: { def: EEPROM_ID }, label: "EEPROM AT28C256", count: 7 },
+      { part: "other", type: "chip", tool: `chip:${SRAM_ID}`, preset: { smd: true }, match: { def: SRAM_ID }, label: "ОЗУ HM62256B", count: 3 },
+      chip("slice4a", 2),
+      chip("reg173"),
+      chip("add4", 3),
+      chip("mux4q", 6),
+      chip("buf8z", 2),
+      chip("or", 9),
+      chip("and", 2),
+      chip("nor"),
+      chip("dffr"),
+      chip("mux"),
+      chip("not", 2),
+      { part: "other", type: "led", tool: "led", preset: { color: "red", size: "5mm" }, label: "светодиод красный", count: 8 },
+      { part: "resistor", ohms: 1000, count: 8 },
+    ],
+    start: () => cpuBench("proj-shift", REGS_BOARD),
+    check: shiftCheck,
   },
   {
     id: "proj-m32",
