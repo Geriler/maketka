@@ -141,21 +141,6 @@ const PLACE: Record<string, [number, number]> = {
   "proj-sar": [9, 3.6],
   "proj-cpu": [9, 6],
   "proj-cpu8": [10, 6],
-  "proj-boot": [10, 7.2],
-  "proj-cpu8m": [10, 8.4],
-  "proj-cpu32": [10, 9.6],
-  "proj-dec": [11, 8.4],
-  "proj-flags": [11, 9.6],
-  "proj-mem": [11, 10.8],
-  "proj-long": [11, 12],
-  "proj-m32": [12, 12],
-  "proj-call": [11, 13.2],
-  "proj-regs": [11, 14.4],
-  "proj-rr": [11, 15.6],
-  "proj-logic": [11, 16.8],
-  "proj-shift": [11, 18],
-  slice: [7, 3.6],
-  slice2: [7, 2.4],
 };
 /**
  * Узлы карты — группы уровней, иначе стрелок не разобрать:

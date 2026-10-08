@@ -1,7 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { applyBoards, boardSize, chipField, chipPinAt, footprintPads, packageName, parsePackage, pinOffsets, seatProblem } from "../src/model/breadboard";
 import { packageProblems } from "../src/chips/package";
-import { CPU8_OUT, CPU8_PROGRAM, CPU32_OUT, CPU32_PROGRAM, cpu8Emulate, cpu32Emulate, cpuRun } from "../src/career/projects";
+import { CPU8_OUT, CPU8_PROGRAM, cpu8Emulate, cpuRun } from "../src/career/projects";
 import { schematicSvg } from "../src/view/schematic";
 import { Simulation } from "../src/sim/simulation";
 import { cpuOfModules, sliceCase, sliceModule } from "./module-build";
@@ -38,25 +38,17 @@ describe("модуль: своя плата на штыревом разъёме
     expect(def.pins).toBe(20);
     expect(def.parts.map((p) => p.id).sort()).toEqual(["AD", "MX", "RA", "RO"]);
     expect(def.pinRoles.filter((r) => r === "nc").length).toBe(3);
-    const sc = cpuOfModules(def, 2);
+    const sc = cpuOfModules(def);
     const svg = schematicSvg(sc, new Simulation(sc));
     expect(svg).toContain("Срез");
     expect(svg).not.toMatch(/NaN|undefined/);
   });
   it("8-битный процессор из двух модулей-срезов считает как эмулятор", () => {
     const def = sliceModule();
-    const r = cpuRun(cpuOfModules(def, 2), CPU8_OUT);
+    const r = cpuRun(cpuOfModules(def), CPU8_OUT);
     expect(r.afterReset).toBe(0);
     expect(r.outs).toEqual(cpu8Emulate(CPU8_PROGRAM, 24));
     expect(r.again).toEqual(cpu8Emulate(CPU8_PROGRAM, 6));
     expect([...r.hurt]).toEqual([]);
-  }, 120000);
-  it("32 бита из восьми модулей: все 32 разряда — как у эмулятора (FFFFFFFF + 1 — перенос через все срезы)", () => {
-    const def = sliceModule();
-    const t0 = performance.now();
-    const r = cpuRun(cpuOfModules(def, 8), CPU32_OUT);
-    expect(r.outs).toEqual(cpu32Emulate(CPU32_PROGRAM, 24));
-    expect(r.outs).toContain(0xffffffff);
-    expect(performance.now() - t0).toBeLessThan(20000);
   }, 120000);
 });
